@@ -11,12 +11,13 @@ import json as _json_mod
 import math
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, Field
@@ -444,6 +445,92 @@ class DropIn(BaseModel):
 _READS_WORTH_SAYING = {("backtest", "conditions")}
 
 
+def _summarise_into(state: Any, session_id: str) -> None:
+    """Write a session's summary, and close it. Never raises: this is tidying."""
+    from qanat.agent import summarise
+
+    try:
+        text = summarise(session_id, state.root, _agent_pref(state))
+    except Exception:  # noqa: BLE001
+        text = ""
+    try:
+        state.store.end_session(session_id, text)
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
+def _owning_session(state: Any, request: Any) -> str:
+    """Which conversation a replay belongs to.
+
+    The console stamps its own fetches, so a stamped request is a person clicking
+    and belongs to whatever session they are in. An unstamped one came from
+    outside the page -- which, while an unattended pass is running, is that pass.
+
+    Without this the pass's own replays were filed against the console's session or
+    against nothing at all, so a pass could run seven trials and its row would say
+    it produced none.
+    """
+    from_ui = request is not None and request.headers.get("x-qanat-ui") == "1"
+    if not from_ui:
+        run = getattr(state, "_research", None)
+        if run is not None and not run.done:
+            return run.session_id
+    return getattr(state, "_session", "") or ""
+
+
+def _bar_words(bar: Any) -> str:
+    """The bar in one phrase, for the log line that records it moving."""
+    if bar is None or getattr(bar, "rule", "none") == "none":
+        return "off"
+    if bar.rule == "floor":
+        return f"t ≥ {bar.t_floor:g}{' (gating)' if bar.gate else ''}"
+    return f"{bar.alpha:g} over the trial count{' (gating)' if bar.gate else ''}"
+
+
+def _bar_loosened(was: Any, now: Any) -> bool:
+    """Whether the change made it easier to pass.
+
+    Logged at `warn` when it did. Not a refusal -- lowering a bar is sometimes the
+    right call, and a system that forbids it just gets worked around -- but it is
+    the one change worth being able to find afterwards.
+    """
+    def strength(b: Any) -> tuple[int, float]:
+        if b is None or getattr(b, "rule", "none") == "none":
+            return (0, 0.0)
+        if b.rule == "floor":
+            return (1 if b.gate else 0, float(b.t_floor))
+        #  A smaller alpha is a higher bar, so it is inverted to compare.
+        return (1 if b.gate else 0, 1.0 / max(1e-9, float(b.alpha)))
+
+    return strength(now) < strength(was)
+
+
+def _say_retry(ask: Any) -> None:
+    """Note in the thread that the transcript was gone and we started over."""
+    ask.lines.append({"kind": "run", "text": "that conversation was not on disk any "
+                      "more -- starting fresh with its summary", "detail": "",
+                      "at": ask.state()["elapsed"]})
+
+
+def _agent_pref(state: Any) -> str:
+    """Which CLI the project asked for, or empty for whichever is found first."""
+    cfg = getattr(state.project, "agent", None)
+    return str(getattr(cfg, "cli", "") or "")
+
+
+def _agent_timeout(state: Any) -> float:
+    """How long one question gets. A bad value is not worth failing an ask over,
+    so it falls back to the default rather than raising at the door."""
+    from qanat.retention import parse_duration
+
+    cfg = getattr(state.project, "agent", None)
+    raw = str(getattr(cfg, "timeout", "") or "180s")
+    try:
+        return max(1.0, parse_duration(raw, "agent.timeout").total_seconds())
+    except ValueError:
+        return 180.0
+
+
 def _trace_of(method: str, path: str) -> tuple[str, str] | None:
     p = [x for x in path.split("/") if x]
     if len(p) < 2 or p[0] != "api":
@@ -786,6 +873,25 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
         except Exception as exc:
             raise _editor_error(exc) from exc
 
+    @app.put("/api/agent")
+    def agent_put(body: dict[str, Any]) -> dict[str, Any]:
+        """Pick which agent CLI answers, and write it into `qanat.yaml`.
+
+        The choice belongs in the file rather than in this process: it is part of
+        how the project is run, it survives a restart, and an unattended pass that
+        took whatever PATH offered is a result nobody can reproduce.
+        """
+        from qanat.editor import set_agent_cli
+
+        cli = str(body.get("cli") or "").strip()
+        try:
+            with state._lock:
+                warnings = set_agent_cli(state.project, state.root, cli)
+                state.reload()
+        except Exception as exc:
+            raise _editor_error(exc) from exc
+        return {"ok": True, "cli": cli, "warnings": warnings}
+
     @app.post("/api/retention/run")
     def retention_run_now() -> dict[str, Any]:
         with state._lock:
@@ -1107,7 +1213,29 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
         row = state.store.backtest(run_id)
         if row is None:
             raise HTTPException(404, f"no backtest {run_id}")
-        return _json.loads(row["report"]) if row.get("report") else dict(row)
+        out = _json.loads(row["report"]) if row.get("report") else dict(row)
+        #  How many distinct questions this answer was picked out of. It belongs
+        #  with the number rather than on a page of its own: a figure shown
+        #  without it is not yet something anybody can judge.
+        if isinstance(out, dict):
+            out["trials"] = state.store.trial_count(str(row.get("alpha") or ""))
+            out["trials_all"] = state.store.trial_count()
+            #  And what that count did to the bar. Explained rather than asserted:
+            #  the rule, the divisor and the resulting threshold all travel with
+            #  the verdict, because one nobody can check is worth little.
+            from qanat.backtest import bar_verdict
+
+            bt = state.project.backtest
+            out["bar"] = bar_verdict(out.get("totals") or {}, out["trials"],
+                                     getattr(bt, "bar", None) if bt else None)
+            #  `alpha` included deliberately: the report blob does not carry it,
+            #  so without this the page had the run's figures and no idea which
+            #  strategy they belonged to -- and the ledger beside them had nothing
+            #  to key on.
+            for col in ("alpha", "hypothesis", "disposition", "parent_run_id", "seal",
+                        "proposed_by", "session_id"):
+                out.setdefault(col, row.get(col))
+        return out
 
     @app.get("/api/backtests/{run_id}/periods/{as_of}")
     def backtest_period(run_id: int, as_of: str) -> dict[str, Any]:
@@ -1136,7 +1264,7 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
         return compare_runs(ra, rb)
 
     @app.post("/api/backtest")
-    def backtest_run(req: BacktestRequest) -> dict[str, Any]:
+    def backtest_run(req: BacktestRequest, request: Request) -> dict[str, Any]:
         from qanat.backtest import BacktestError, run_backtest
 
         if not state._replay.acquire(blocking=False):
@@ -1153,6 +1281,10 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
                 alpha=req.alpha, allocation=req.allocation,
                 fee_bps=req.fee_bps, slippage_bps=req.slippage_bps,
                 purge=req.purge, embargo=req.embargo,
+                #  Whatever conversation owns this replay. Inferred rather than
+                #  asked for, exactly as the thread infers who made a call: a
+                #  caller has nothing to remember to send.
+                session_id=_owning_session(state, request),
             )
         except (BacktestError, ValueError) as exc:
             # A mistyped `rebalance` raised a plain ValueError from parse_duration,
@@ -1185,16 +1317,227 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
     #  This starts a process on the machine, which is exactly why the `Host` guard
     #  above is not optional.
 
+    # ---- the loop ------------------------------------------------------------
+    @app.get("/api/research")
+    def research_state() -> dict[str, Any]:
+        """What the unattended pass is set to do, and what it last did."""
+        cfg = state.project.research
+        cur = getattr(state, "_research", None)
+        from qanat.research import target_alphas
+
+        return {
+            "research": cfg.model_dump() if cfg else None,
+            "running": cur.state() if (cur and not cur.done) else None,
+            "last": cur.state() if (cur and cur.done) else None,
+            #  What it would pick if it woke now. Shown because a schedule whose
+            #  target nobody can predict is a schedule nobody trusts.
+            #  Answered whether or not a pass is configured: what it would work on
+            #  is a fact about the project, and somebody deciding whether to turn
+            #  this on wants to see it before they do.
+            "would_target": target_alphas(state.store, state.project,
+                                          int(getattr(cfg, "targets", 1) or 1)),
+        }
+
+    @app.post("/api/research/run")
+    def research_run(body: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Fire a pass now, without waiting for the schedule.
+
+        The way to find out what an unattended pass will do is to watch one, so
+        this exists before the cron does.
+        """
+        from qanat.research import start as start_pass
+
+        goal = str((body or {}).get("goal") or "")
+        if goal and goal not in ("falsify", "monitor"):
+            raise HTTPException(400, "goal is falsify or monitor")
+        base = str((body or {}).get("base") or "http://127.0.0.1:8420").rstrip("/")
+        pass_ = start_pass(state, goal, base)
+        if pass_ is None:
+            raise HTTPException(
+                409, "nothing to work on: no alpha in this project has been priced yet")
+        return {"started": True, **pass_.state()}
+
+    @app.delete("/api/research")
+    def research_stop() -> dict[str, Any]:
+        cur = getattr(state, "_research", None)
+        if cur is None or cur.done:
+            return {"stopped": False, "note": "nothing was running"}
+        return {"stopped": cur.stop()}
+
+    # ---- the bar -------------------------------------------------------------
+    @app.get("/api/bar")
+    def bar_get() -> dict[str, Any]:
+        """How high a result has to be, and what that is doing right now."""
+        bt = state.project.backtest
+        bar = getattr(bt, "bar", None) if bt else None
+        return {
+            "bar": bar.model_dump() if bar else None,
+            "trials": state.store.trial_count(),
+            "last_changed": state.store.bar_history(1),
+        }
+
+    @app.put("/api/bar")
+    def bar_put(body: dict[str, Any]) -> dict[str, Any]:
+        """Set the bar, and record who set it.
+
+        The recording is the point. Whoever is proposing strategies should not be
+        able to quietly lower the line that judges them -- and an agent reading and
+        writing this is a reasonable thing to allow, so long as doing it leaves a
+        mark. A bar that moved just before something was promoted is then a visible
+        fact rather than an invisible one.
+        """
+        from qanat.editor import set_bar
+
+        bt = state.project.backtest
+        was = getattr(bt, "bar", None) if bt else None
+        try:
+            with state._lock:
+                warnings = set_bar(state.project, state.root, body or {})
+                state.reload()
+        except Exception as exc:
+            raise _editor_error(exc) from exc
+        now = state.project.backtest.bar
+        state.store.event(
+            "warn" if _bar_loosened(was, now) else "info", "bar",
+            f"bar {_bar_words(was)} → {_bar_words(now)}",
+        )
+        return {"ok": True, "bar": now.model_dump(), "warnings": warnings,
+                "loosened": _bar_loosened(was, now)}
+
+    # ---- the ledger ----------------------------------------------------------
+    @app.get("/api/trials")
+    def trials_list(alpha: str = "", limit: int = 200) -> dict[str, Any]:
+        """Every attempt, and how many distinct questions they amount to.
+
+        `count` is the number that makes the rest of the page judgeable. A Sharpe
+        of 2.2 from one attempt is interesting; the same figure picked out of fifty
+        is what noise looks like, and nothing in a backtest can tell the two apart.
+        """
+        return {
+            "alpha": alpha,
+            "count": state.store.trial_count(alpha),
+            "trials": state.store.trials(alpha, limit),
+        }
+
+    @app.post("/api/trials")
+    def trials_annotate(body: dict[str, Any]) -> dict[str, Any]:
+        """Say what a run was an attempt at.
+
+        A write door rather than a file, because the agent has no file tools by
+        design -- everything it knows about this project it reads and writes
+        through here. Recording a refutation matters more than recording a
+        success: the attempts that failed are the count, and a ledger holding only
+        winners cannot be divided by anything.
+        """
+        try:
+            run_id = int(body.get("run_id") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "run_id must be a number") from None
+        if not run_id or state.store.backtest(run_id) is None:
+            raise HTTPException(404, f"no backtest {run_id}")
+        disposition = str(body.get("disposition") or "").strip()
+        allowed = {"", "live", "shelved", "refuted", "candidate"}
+        if disposition not in allowed:
+            raise HTTPException(
+                400, f"disposition must be one of {sorted(allowed - {''})}")
+        #  The bar blocks exactly one thing, and only when it is set to gate:
+        #  calling a run live. Everything else here is a record of what happened
+        #  and recording is always allowed.
+        if disposition == "live":
+            from qanat.backtest import gate_promotion
+
+            why = gate_promotion(state.store, state.project, run_id)
+            if why:
+                raise HTTPException(409, why)
+        state.store.annotate_trial(
+            run_id,
+            hypothesis=str(body.get("hypothesis") or "").strip(),
+            parent_run_id=int(body.get("parent_run_id") or 0),
+            disposition=disposition,
+            seal=str(body.get("seal") or "").strip(),
+            proposed_by=str(body.get("proposed_by") or "").strip(),
+        )
+        return {"ok": True, "run_id": run_id, "count": state.store.trial_count()}
+
+    # ---- sessions ------------------------------------------------------------
+    @app.get("/api/sessions")
+    def sessions_list(limit: int = 50) -> dict[str, Any]:
+        """Every conversation, newest first, and which one is open.
+
+        `runs` is legitimately zero on most of them. A session that asked a
+        question and got an answer produced no replay, and showing an empty space
+        there is the truth about it rather than a gap in the record.
+        """
+        return {
+            "open": getattr(state, "_session", "") or "",
+            "sessions": state.store.sessions(limit),
+        }
+
+    @app.get("/api/sessions/{session_id}")
+    def session_one(session_id: str) -> dict[str, Any]:
+        """One conversation, and what came out of it."""
+        row = state.store.session(session_id)
+        if row is None:
+            raise HTTPException(404, f"no session {session_id}")
+        return {
+            **row,
+            "open": getattr(state, "_session", "") == session_id,
+            "backtests": state.store.session_backtests(session_id),
+            #  What was actually said. Named apart from the row's `asks`, which
+            #  is a count: one key cannot be both a number and a list, and the
+            #  spread above would have quietly made it the list.
+            #
+            #  Sessions from before this was kept have none, and show a card
+            #  rather than a thread -- which is the truth about them.
+            "messages": state.store.session_asks(session_id),
+        }
+
+    @app.post("/api/sessions/new")
+    def session_new() -> dict[str, Any]:
+        """Close whatever is open and start fresh.
+
+        Closing summarises in the background: it resumes the session to ask it
+        what happened, which takes as long as an answer does and has no business
+        holding up the next question.
+        """
+        old = getattr(state, "_session", "") or ""
+        state._session = None
+        if old:
+            threading.Thread(target=_summarise_into, args=(state, old), daemon=True).start()
+        return {"ok": True, "closed": old}
+
+    @app.post("/api/sessions/{session_id}/summarise")
+    def session_summarise(session_id: str) -> dict[str, Any]:
+        if state.store.session(session_id) is None:
+            raise HTTPException(404, f"no session {session_id}")
+        _summarise_into(state, session_id)
+        row = state.store.session(session_id)
+        return {"ok": True, "summary": (row or {}).get("summary") or ""}
+
+    @app.get("/api/alphas/{alpha}/sessions")
+    def alpha_sessions(alpha: str) -> list[dict[str, Any]]:
+        """The other direction: from a strategy back to the conversations it came
+        out of, each with what it got."""
+        return state.store.alpha_sessions(alpha)
+
     @app.get("/api/ask")
     def ask_state() -> dict[str, Any]:
-        """What the current question is doing, polled while it runs."""
-        from qanat.agent import find_cli
+        """What the current question is doing, and what could answer it.
 
-        cli = find_cli()
+        `clis` carries every agent we know how to drive, installed or not, so the
+        console can offer the choice and say plainly which ones work rather than
+        listing a name that quietly returns nothing.
+        """
+        from qanat.agent import find_cli, list_clis
+
+        prefer = _agent_pref(state)
+        cli = find_cli(prefer)
         cur = getattr(state, "_ask", None)
         return {
             "available": bool(cli),
             "cli": cli["label"] if cli else None,
+            "clis": list_clis(prefer),
+            "chosen": prefer,
             "ask": cur.state() if cur else None,
         }
 
@@ -1211,7 +1554,8 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
 
     @app.post("/api/ask")
     def ask_start(body: dict[str, Any]) -> dict[str, Any]:
-        from qanat.agent import Ask
+        from qanat.agent import Ask, find_cli
+        from qanat.agent import carry as run_ask_carry
         from qanat.agent import run as run_ask
 
         question = str(body.get("question") or "").strip()
@@ -1229,6 +1573,28 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
         state._ask = ask
         base = str(body.get("base") or "http://127.0.0.1:8420").rstrip("/")
         root = state.root
+        prefer, budget = _agent_pref(state), _agent_timeout(state)
+
+        #  Which conversation this question belongs to. Naming one continues it;
+        #  naming none continues whichever is open, and opens one if none is.
+        #  The id is ours and is handed to the CLI, so both sides call the same
+        #  conversation by the same name.
+        want = str(body.get("session") or "").strip()
+        carried, resume = "", False
+        if want:
+            row = state.store.session(want)
+            if row is None:
+                raise HTTPException(404, f"no session {want}")
+            sid, resume = want, True
+            carried = run_ask_carry(str(row.get("summary") or ""))
+        elif getattr(state, "_session", None):
+            sid, resume = state._session, True
+        else:
+            sid = str(uuid.uuid4())
+        state._session = sid
+        state.store.open_session(sid, cli=(find_cli(prefer) or {}).get("label", ""),
+                                 title=question[:120])
+        ask.session_id = sid
 
         def work() -> None:
             # the agent is a person's hands here, not the clock's
@@ -1244,7 +1610,18 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
 
             before = shot()
             try:
-                run_ask(ask, root, base)
+                run_ask(ask, root, base, timeout=budget, prefer=prefer,
+                        session_id=sid, resume=resume)
+                #  `--resume` needs the CLI to still hold that transcript. When it
+                #  does not -- cleared cache, another machine -- the session row is
+                #  still here and the conversation is not, so start a fresh one
+                #  under the same id and hand it the summary instead. Degraded,
+                #  and much better than an error the person cannot act on.
+                if resume and ask.error and not ask.answer:
+                    _say_retry(ask)
+                    ask.error = ""
+                    run_ask(ask, root, base, timeout=budget, prefer=prefer,
+                            session_id=sid, resume=False, carried=carried)
             except Exception as exc:  # noqa: BLE001
                 ask.error = f"{type(exc).__name__}: {exc}"
                 ask.done = True
@@ -1261,6 +1638,15 @@ def create_app(state: AppState, allow_hosts: list[str] | None = None) -> FastAPI
                 "error" if ask.error else "info", "agent",
                 ask.error[:160] if ask.error else (ask.answer[:160] or "finished"),
             )
+            try:
+                state.store.note_ask(sid, cost_usd=ask.cost_usd, model=ask.model,
+                                     title=question[:120])
+                #  The conversation, kept. Written from the same state the console
+                #  was drawing live, and after the diff lines are appended, so the
+                #  replay shows what moved as well as what was said.
+                state.store.save_ask(sid, ask.state())
+            except Exception:  # noqa: BLE001, S110 -- accounting must not fail an answer
+                pass
             ask.done = True          # last, so the diff lines are already there
 
         threading.Thread(target=work, daemon=True).start()

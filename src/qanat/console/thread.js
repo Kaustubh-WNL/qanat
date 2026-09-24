@@ -584,6 +584,10 @@
   }
 
   window.Thread = { said: said, poll: poll, start: start, showing: showing,
+                    //  Shared with the session replay, so a past answer renders
+                    //  exactly as it did when it was live rather than through a
+                    //  second renderer that drifts from this one.
+                    md: md,
                     suggest: suggest, streaming: streaming, endStream: endStream,
                     asked: asked,
                     listen: listen,

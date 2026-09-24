@@ -216,6 +216,52 @@ def set_retention(project: Project, root: Path, retention: dict[str, str]) -> li
     return _edit(project, root, change)
 
 
+def set_bar(project: Project, root: Path, raw: dict) -> list[str]:
+    """Set how high a result has to be, given how many were tried.
+
+    Writes into `qanat.yaml` like everything else about how the project is run, so
+    the bar is readable, reviewable and in version control -- rather than a number
+    somebody remembers applying.
+    """
+    from qanat.models import Bar
+
+    if project.backtest is None:
+        raise EditorError("this project has no `backtest:` block to hold a bar")
+    try:
+        bar = Bar(**{k: v for k, v in (raw or {}).items() if v is not None})
+    except Exception as exc:
+        raise EditorError(str(exc)) from exc
+    if not 0.0 < bar.alpha < 1.0:
+        raise EditorError(f"alpha is a significance level between 0 and 1, got {bar.alpha}")
+    if bar.t_floor < 0:
+        raise EditorError(f"t_floor cannot be negative, got {bar.t_floor}")
+
+    def change(d: Project) -> None:
+        d.backtest.bar = bar
+
+    return _edit(project, root, change)
+
+
+def set_agent_cli(project: Project, root: Path, cli: str) -> list[str]:
+    """Name the agent CLI the console should drive, or clear the choice.
+
+    Refuses a name we cannot drive rather than writing it and failing later at the
+    ask box, where the reason would be much harder to see.
+    """
+    from qanat.agent import CLIS
+    from qanat.models import Agent
+
+    known = {c["bin"] for c in CLIS}
+    if cli and cli not in known:
+        raise EditorError(f"unknown agent cli {cli!r} -- known: {', '.join(sorted(known))}")
+
+    def change(d: Project) -> None:
+        current = d.agent or Agent()
+        d.agent = Agent(cli=cli, timeout=current.timeout)
+
+    return _edit(project, root, change)
+
+
 def drop_table(store, project: Project, root: Path, ref: str, *, force: bool = False) -> int:
     from qanat.plan import plan
 

@@ -88,3 +88,26 @@ def test_the_braces_balance():
     assert masked.count("{") == masked.count("}"), (
         f"{masked.count('{')} opening braces against {masked.count('}')} closing"
     )
+
+
+def test_every_console_module_defines_the_helpers_it_calls():
+    """`day()` was lifted into backtests.js from another module that had it, and
+    the whole report panel went blank on a ReferenceError nobody would see without
+    opening the browser console. A module that borrows an idiom has to bring the
+    helper with it."""
+    import re
+
+    console = CSS.parent
+    #  The small formatting helpers each module keeps its own copy of. They are
+    #  duplicated on purpose -- these files share no module system -- which is
+    #  exactly why a missing one is easy to introduce.
+    shared = ("day", "pct", "sign", "esc", "el", "money")
+    for path in sorted(console.glob("*.js")):
+        src = path.read_text()
+        for name in shared:
+            called = re.search(rf"[^.\w]{name}\(", src)
+            if not called:
+                continue
+            defined = re.search(rf"function {name}\s*\(", src) or re.search(
+                rf"(var|let|const)\s+{name}\s*=", src)
+            assert defined, f"{path.name} calls {name}() but never defines it"

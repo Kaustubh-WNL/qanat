@@ -66,19 +66,31 @@
        what was asked, what the agent did about it, and what moved. -->
   <aside class="chatrail" id="chatrail">
     <div class="crhead">
-      <span class="crtitle">Session</span>
+      <!-- The title is the way in. Sessions are not a stage of the project, so they
+           do not belong on the spine; they belong where the current one already
+           lives, which is here. -->
+      <button type="button" class="crtitle" id="cr-sessions"
+              title="past sessions">Session <span class="chev">▾</span></button>
       <span class="grow"></span>
       <button type="button" class="crpin" id="cr-pin" title="stop the stage following along">
         stage: following</button>
     </div>
     <div class="crthread" id="cr-thread"></div>
+    <!-- Over the thread rather than beside it: the rail is narrow, and a history
+         you have to scroll past to reach the question box is a history in the way. -->
+    <div class="crhist" id="cr-hist" hidden></div>
 
     <!-- Plain English, answered by the agent already installed on this machine. No
-         key is asked for and none is held: `claude` or `cursor-agent` is already
-         signed in, and qanat just runs it. -->
+         key is asked for and none is held: `claude` is already signed in, and qanat
+         just runs it. -->
     <div class="askbar" id="askbar">
       <form class="askrow" id="ask-form" autocomplete="off">
         <label class="lbl" for="ask-q" id="ask-lbl">Ask</label>
+        <!-- Who answers. Two installed agents used to be settled by whichever came
+             first on PATH, silently; this says which one is running and lets the
+             choice be made, and the choice lands in qanat.yaml like every other
+             thing about how the project is run. -->
+        <select class="cli" id="ask-cli" title="which agent answers" hidden></select>
         <input id="ask-q" type="text" spellcheck="false"
                placeholder="loading…" aria-describedby="ask-lbl">
         <button type="submit" class="btn-head go" id="ask-go">ask</button>
@@ -235,6 +247,7 @@
 <script src="/static/data.js"></script>
 <script src="/static/live.js"></script>
 <script src="/static/conditions.js"></script>
+<script src="/static/sessions.js"></script>
 <script src="/static/thread.js"></script>
 </body>
 </html>

@@ -451,18 +451,73 @@
     if (box && !box.disabled) box.placeholder = ASK_HINTS[page] || ASK_HINTS.backtest;
   }
 
+  //  Every agent we know how to drive, whether it is on this machine, and which
+  //  one would answer. The name used to be a label, decided by whichever came
+  //  first on PATH -- so with two installed the console stated a choice nobody
+  //  had made and offered no way to change it.
+  //
+  //  An entry says plainly what it can do. `partial` is a real state and worth a
+  //  colour: an agent that runs and whose reply never arrives is a worse thing to
+  //  hand somebody than one that is simply not installed.
+  function paintClis(s) {
+    var sel = el('ask-cli');
+    if (!sel) return;
+    var rows = s.clis || [];
+    if (!rows.length) { sel.hidden = true; return; }
+    sel.hidden = false;
+    sel.innerHTML = '';
+    var auto = document.createElement('option');
+    auto.value = '';
+    //  The short name, not the display one: this sits next to the question box in
+    //  a rail 320px wide, and "auto · Claude Code" ate the box it was labelling.
+    var running = null;
+    rows.forEach(function (c) { if (c.active) running = c; });
+    auto.textContent = running ? 'auto · ' + running.bin : 'auto · none';
+    sel.appendChild(auto);
+    rows.forEach(function (c) {
+      var o = document.createElement('option');
+      o.value = c.bin;
+      o.disabled = !c.found;
+      o.textContent = c.label + (!c.found ? ' · not installed'
+                                 : c.support === 'partial' ? ' · partial' : '');
+      sel.appendChild(o);
+    });
+    sel.value = s.chosen || '';
+    var shown = null;
+    rows.forEach(function (c) {
+      if (s.chosen ? c.bin === s.chosen : c.active) shown = c;
+    });
+    sel.setAttribute('data-support', shown ? shown.support : 'full');
+    sel.title = (shown && shown.note) ? shown.note : 'which agent answers';
+    //  Assignment rather than a listener: askSetup runs again after a change, and
+    //  a listener added each time would fire once per change ever made.
+    sel.onchange = async function () {
+      var pick = sel.value;
+      try {
+        await api('/api/agent', {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ cli: pick }),
+        });
+      } catch (e) { /* the re-read below puts the list back to what is true */ }
+      askSetup();
+    };
+  }
+
   async function askSetup() {
     var box = el('ask-q'), go = el('ask-go');
     try {
       var s = await api('/api/ask');
     } catch (e) { return; }
+    paintClis(s);
     if (!s.available) {
       box.disabled = true; go.disabled = true;
-      box.placeholder = 'install Claude Code or Cursor and sign in -- qanat never holds a key';
+      box.placeholder = 'install Claude Code and sign in -- qanat never holds a key';
       el('ask-lbl').textContent = 'Ask';
       return;
     }
-    el('ask-lbl').textContent = 'Ask ' + s.cli;
+    //  The name moved into the picker beside it, so the label is a label again.
+    el('ask-lbl').textContent = 'Ask';
+    box.disabled = false; go.disabled = false;
     askPlaceholder();
     if (s.ask && !s.ask.done) { askButton(true); el('ask-q').disabled = true;
                                 paintAsk(s.ask); pollAsk(); }
@@ -607,11 +662,19 @@
       el('ask-work').classList.remove('done');
       el('ask-what').textContent = 'starting';
       try {
+        //  A session picked out of the history rides along on the first question
+        //  only. After that the server holds it open, so every later question
+        //  continues it without being told.
+        var cont = (window.Sessions && window.Sessions.continuing()) || '';
         await api('/api/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: q, base: location.origin }),
+          body: JSON.stringify({
+            question: q, base: location.origin,
+            session: cont || undefined,
+          }),
         });
+        if (cont && window.Sessions) window.Sessions.sent();
         //  One connection carries the reply and the calls it makes. The poll stays
         //  as the fallback for a browser that cannot open it.
         if (!(window.Thread && window.Thread.listen && window.Thread.listen())) pollAsk();

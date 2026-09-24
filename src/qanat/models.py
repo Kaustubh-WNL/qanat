@@ -166,6 +166,61 @@ class Step(Base):
         return self
 
 
+class Research(Base):
+    """An unattended pass that works on the project while nobody is watching.
+
+    The goal is fixed and narrow on purpose. `falsify` takes a strategy that
+    already looks good and tries to break it -- other windows, other universes,
+    other costs -- and that is the one goal that cannot overfit: every result it
+    produces can only take confidence away. `monitor` compares what a live
+    strategy is earning against what its backtest promised, and invents nothing
+    at all.
+
+    Searching for new strategies is deliberately not here yet. A loop that
+    proposes and keeps winners needs the sealed window and the trial-count bar
+    doing real work first, or it is an expensive way to fool yourself.
+    """
+
+    enabled: bool = False
+    #: When to wake. Cron, like a source or a step.
+    schedule: str = "0 3 * * *"
+    goal: Literal["falsify", "monitor"] = "falsify"
+    #: Stop a pass once it has cost this much. The CLI reports its own spend, so
+    #: this is measured rather than estimated.
+    budget_usd: float = 1.0
+    #: How many alphas one pass will work on.
+    targets: int = 1
+
+
+class Bar(Base):
+    """How high a result has to be, given how many were tried to find it.
+
+    The same Sharpe means opposite things at one attempt and at fifty, and nothing
+    inside a backtest can tell you which you are looking at. This is where that
+    correction is written down, in the file, where it can be read back and argued
+    with -- rather than living in somebody's head and being applied inconsistently.
+
+    `gate` is off by default and that is deliberate. Turning a number into
+    something that blocks a decision is a choice the person makes once, knowingly;
+    until then this reports and explains and refuses nothing.
+    """
+
+    #: none  -- report the figures, require nothing.
+    #: floor -- a fixed t-stat, regardless of how many were tried. 3.0 is the
+    #:          bar Harvey, Liu and Zhu argued for after counting how many
+    #:          factors the literature had already tested.
+    #: count -- raise the bar with the number of trials, which is the one that
+    #:          actually answers "was this just the luckiest of fifty".
+    rule: Literal["none", "floor", "count"] = "none"
+    #: The fixed bar, for `floor`.
+    t_floor: float = 3.0
+    #: The significance a single test would have needed, before it is divided by
+    #: the number of tests. For `count`.
+    alpha: float = 0.05
+    #: Whether failing this stops anything, or only says so.
+    gate: bool = False
+
+
 class Backtest(Base):
     """How a replay turns the weights table into a net-edge number.
 
@@ -184,6 +239,15 @@ class Backtest(Base):
     purge: str = "0d"                 # hold rows back this long before a step may read them
     embargo: str = "0d"               # wait this long after as_of before a return counts
     decay: int = 0                    # smooth the portfolio over this many rebalances; 0 is off
+    # What the strategy has to beat to have earned anything. Without one, a
+    # long-only rule in a rising market reads as skill and the report cannot say
+    # otherwise -- every number it prints is the market's move plus yours, with no
+    # seam between them. Either a symbol in the prices table, or `equal_weight`:
+    # hold the whole universe in equal parts, which is the honest floor for a rule
+    # whose whole claim is that it picks better than picking nothing.
+    benchmark: str = ""
+    #: What a result has to clear before it counts, given how many were tried.
+    bar: Bar | None = None
     split: str = ""                   # first out-of-sample date; before it is in-sample
     # Keep scoring forward as data arrives, instead of once over a frozen window.
     # `qanat serve` runs a pass each time the data reaches the next as-of date on
@@ -208,6 +272,26 @@ class Backtest(Base):
         return _qualified([v])[0]
 
 
+class Agent(Base):
+    """Which agent CLI answers a question in the console.
+
+    Left unset the console takes the first one it finds on PATH, which is fine
+    until two are installed and the choice is the accident of ordering. Naming it
+    here settles it once, in the file, where it can be read back.
+
+    It matters more than a preference once anything runs unattended: which agent
+    proposed a strategy is part of what produced the number, so a pass that ran on
+    whatever PATH offered that morning is a result nobody can reproduce.
+    """
+
+    #: The binary to drive -- `claude`, `cursor-agent`. Empty means first found.
+    cli: str = ""
+    #: How long one question gets before the CLI is killed. A person waiting on an
+    #: answer gives up long before a research pass does, so this is a setting
+    #: rather than the constant it used to be.
+    timeout: str = "180s"
+
+
 class Project(Base):
     name: str = Field(validation_alias=AliasChoices("project", "name"))
     store: str = "./data/qanat.duckdb"
@@ -221,6 +305,8 @@ class Project(Base):
     # worker until the process ends, and four of those stop the scheduler dead.
     job_timeout: str | None = None
     backtest: Backtest | None = None
+    agent: Agent | None = None
+    research: Research | None = None
 
     # ---- lookups -------------------------------------------------------------
     def store_url(self, root: Path) -> str:

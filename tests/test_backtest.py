@@ -799,3 +799,134 @@ def test_a_live_pass_stamps_the_frontier_before_it_scores(tmp_path: Path):
     assert stamped, "a live pass ran without writing the frontier down"
     assert store.last_live_backtest(), "the run was not recorded as live"
     store.close()
+
+
+# ---------------------------------------------------------------- risk figures
+def _ps(nets, start="2026-01-05"):
+    import pandas as pd
+
+    from qanat.backtest import Period
+
+    day = pd.Timestamp(start)
+    out = []
+    for i, n in enumerate(nets):
+        a, b = day + pd.Timedelta(days=5 * i), day + pd.Timedelta(days=5 * (i + 1))
+        out.append(Period(as_of=str(a.date()), priced_from=str(a.date()), priced_to=str(b.date()),
+                          holdings=3, gross=n, turnover=0.1, fees=0.0, slippage=0.0, net=n))
+    return out
+
+
+def test_per_year_comes_from_the_rebalance_gap():
+    """A period is a rebalance, not a day. 252 would call a weekly rule five times
+    more volatile than it is."""
+    from qanat.backtest import per_year
+
+    assert per_year("1d") == 365.0
+    assert round(per_year("5d"), 2) == 73.0
+    assert round(per_year("1w"), 2) == 52.14
+    assert per_year("nonsense") == 252.0          # falls back rather than raising
+
+
+def test_max_drawdown_is_a_property_of_the_path():
+    """Two runs can end at the same place having been to very different ones."""
+    from qanat.backtest import totals_of
+
+    steady = totals_of(_ps([0.01] * 4), "5d")
+    bumpy = totals_of(_ps([0.25, -0.20, 0.25, 1.01 ** 4 / 1.25 - 1]), "5d")
+    assert steady["max_drawdown"] == 0.0
+    assert bumpy["max_drawdown"] < -0.15
+    # and the totals alone would not have told you
+    assert abs(steady["net"] - bumpy["net"]) < 0.02
+
+
+def test_sharpe_is_absent_rather_than_zero_when_it_has_no_meaning():
+    """A run that never moved has no Sharpe. Printing 0.0 would read as measured."""
+    from qanat.backtest import totals_of
+
+    assert totals_of(_ps([0.01]), "5d")["sharpe"] is None          # one period
+    assert totals_of(_ps([0.01, 0.01, 0.01]), "5d")["sharpe"] is None   # no variance
+    assert totals_of(_ps([0.02, -0.01, 0.03]), "5d")["sharpe"] is not None
+
+
+def test_benchmark_keys_are_missing_without_one():
+    """A project that has not measured this should not be able to read a number as
+    though it had."""
+    from qanat.backtest import totals_of
+
+    t = totals_of(_ps([0.02, -0.01]), "5d")
+    assert "benchmark_net" not in t and "excess_net" not in t
+    t = totals_of(_ps([0.02, -0.01]), "5d", [0.01, 0.01])
+    assert t["benchmark_net"] > 0
+    # 2% then -1% against 1% then 1%: the rule is barely ahead
+    assert t["excess_net"] == pytest.approx(t["equity"] - 1.0 - t["benchmark_net"])
+
+
+def test_equal_weight_benchmark_prices_on_the_same_boundaries():
+    import pandas as pd
+
+    from qanat.backtest import benchmark_returns
+
+    ps = _ps([0.0, 0.0])
+    idx = pd.to_datetime([p.priced_from for p in ps] + [ps[-1].priced_to])
+    prices = pd.DataFrame({"AAA": [100.0, 110.0, 110.0], "BBB": [100.0, 90.0, 99.0]}, index=idx)
+
+    equal = benchmark_returns(prices, ps, "equal_weight")
+    assert equal == pytest.approx([0.0, 0.05])     # +10% and -10%, then flat and +10%
+    one = benchmark_returns(prices, ps, "AAA")
+    assert one == pytest.approx([0.10, 0.0])
+    # a benchmark the prices cannot answer is absent, not zero
+    assert benchmark_returns(prices, ps, "NOPE") is None
+    assert benchmark_returns(prices, ps, "") is None
+
+
+# ------------------------------------------------------------------- the bar
+def test_the_t_stat_is_the_sharpe_over_how_long_it_ran():
+    """A good ratio measured over three months is not the same evidence as the
+    same ratio over ten years, and only one should survive being divided by the
+    number of things you tried."""
+    from qanat.backtest import t_stat
+
+    short = {"sharpe": 2.0, "periods": 13, "periods_per_year": 52.0}    # a quarter
+    long_ = {"sharpe": 2.0, "periods": 520, "periods_per_year": 52.0}   # ten years
+    assert t_stat(short) == pytest.approx(1.0, abs=0.01)
+    assert t_stat(long_) == pytest.approx(6.32, abs=0.01)
+    assert t_stat({"sharpe": None, "periods": 10, "periods_per_year": 52.0}) is None
+
+
+def test_the_bar_rises_with_the_number_of_trials():
+    """The whole point. Sharpe 2.23 over two years is what my noise simulation
+    produced after fifty tries -- it should pass at one trial and fail at fifty."""
+    from qanat.backtest import bar_verdict
+    from qanat.models import Bar
+
+    totals = {"sharpe": 2.23, "periods": 104, "periods_per_year": 52.0}
+    one = bar_verdict(totals, 1, Bar(rule="count"))
+    fifty = bar_verdict(totals, 50, Bar(rule="count"))
+    assert one["clears"] is True
+    assert fifty["clears"] is False
+    assert fifty["required"] > one["required"]
+    # a fixed floor cannot know you looked fifty times, which is why it is weaker
+    assert bar_verdict(totals, 50, Bar(rule="floor", t_floor=3.0))["clears"] is True
+
+
+def test_no_bar_reports_and_requires_nothing():
+    """Off by default: turning a number into something that blocks a decision is a
+    choice somebody makes knowingly."""
+    from qanat.backtest import bar_verdict
+    from qanat.models import Bar
+
+    v = bar_verdict({"sharpe": 2.23, "periods": 104, "periods_per_year": 52.0}, 50, Bar())
+    assert v["rule"] == "none" and v["clears"] is None and v["gate"] is False
+    assert bar_verdict({}, 1, None)["clears"] is None
+
+
+def test_the_verdict_explains_itself():
+    """A verdict nobody can check is worth about as much as no verdict."""
+    from qanat.backtest import bar_verdict
+    from qanat.models import Bar
+
+    v = bar_verdict({"sharpe": 1.5, "periods": 104, "periods_per_year": 52.0}, 12,
+                    Bar(rule="count", alpha=0.05))
+    assert v["trials"] == 12
+    assert "12 trials" in v["note"] and "0.05" in v["note"]
+    assert v["required"] is not None and v["t"] is not None

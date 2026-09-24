@@ -451,6 +451,14 @@ def cmd_backtest(args) -> int:
     print(f"    {'sum of periods':<16} {_money(added)}")
     print(f"    {c('net', G if net > 0 else R_)}              "
           f"{c(_money(net), G if net > 0 else R_)}  {D}compounded{X}")
+    #  Directly under net, because it changes how net reads. A rule that earned
+    #  12% in a market that rose 9% earned 3%, and printing only the first number
+    #  is the difference between a result and a claim.
+    if "benchmark_net" in t:
+        ex = t["excess_net"]
+        print(f"    {'benchmark':<16} {_money(t['benchmark_net'])}  {D}doing nothing instead{X}")
+        print(f"    {c('excess', G if ex > 0 else R_)}           "
+              f"{c(_money(ex), G if ex > 0 else R_)}  {D}what the rule added{X}")
     print()
     seg = res.segments or {}
     if seg.get("in_sample") and seg.get("out_of_sample"):
@@ -484,6 +492,14 @@ def cmd_backtest(args) -> int:
         print(f"    hit rate         {t['hit_rate'] * 100:6.1f}%")
     print(f"    turnover         {t['turnover']:7.2f}  {D}sum of |weight changes|{X}")
     print(f"    best / worst     {_money(t['best_period'])} / {_money(t['worst_period'])}")
+    #  What it cost in risk to earn the above. Two rules that made the same amount
+    #  are not the same rule if one of them halved on the way there.
+    sh = t.get("sharpe")
+    if sh is not None:
+        print(f"    sharpe           {sh:7.2f}  {D}per unit of its own vol, "
+              f"annualised at {t['periods_per_year']:.0f}/yr{X}")
+    if t.get("max_drawdown") is not None:
+        print(f"    max drawdown     {_money(t['max_drawdown'])}  {D}worst fall from a high{X}")
     print(f"\n  {D}qanat report {res.run_id}   the periods, one by one{X}\n")
     return 0 if not res.failures else 1
 
@@ -606,6 +622,11 @@ def cmd_serve(args) -> int:
     named = [] if args.host in ("0.0.0.0", "::", "") else [args.host]
     app = create_app(state, allow_hosts=named)
     if sched:
+        #  The unattended pass drives an agent, and the agent reaches the project
+        #  over this API -- so it needs the address we are about to serve on. Handed
+        #  over here rather than worked out in the scheduler, which has no idea
+        #  whether anything is listening.
+        sched.research_through(state, f"http://127.0.0.1:{args.port}")
         sched.start()
         if args.run_now:
             # one full pass in dependency order -- firing every job at once would

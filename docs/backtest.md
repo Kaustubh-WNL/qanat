@@ -2,6 +2,45 @@
 
 The README covers running a backtest and reading the number. This is the rest of how it works.
 
+
+## Net cannot be ranked on its own
+
+Two runs that earned the same amount are not the same strategy if one of them halved on the way,
+and a long-only rule in a rising market is not skill. So `totals` carries the denominator as well
+as the numerator:
+
+| field | |
+| --- | --- |
+| `vol` | sample standard deviation of net per period |
+| `sharpe` | that ratio annualised by the rebalance gap, or `null` where it has no meaning |
+| `max_drawdown` | worst fall from a high, walked from the compounded path |
+| `periods_per_year` | the annualisation used, written down so the Sharpe can be checked |
+| `benchmark_net` · `excess_net` | present only when `benchmark:` is set |
+
+**Annualisation comes from the rebalance gap, not from 252.** A period here is a rebalance. A
+weekly strategy annualised at 252 would be called five times more volatile than it is, so
+`per_year("5d")` is 73 and `per_year("1w")` is 52.14. The console computes it the same way from
+the same string, so the Sharpe drawn on the page and the one written into the run agree.
+
+`sharpe` is `null` rather than `0.0` for a single period or a run that never moved. Reporting
+zero would read as a measured result instead of an absent one.
+
+**The t-stat falls out of it**: `t = sharpe × √years`. Which says the plain thing out loud — a
+good ratio over three months is not the same evidence as the same ratio over ten years, and only
+one of them should survive being divided by the number of things you tried.
+
+## The benchmark is priced on the strategy's own periods
+
+Not on a calendar. A benchmark measured over a different window is a different question wearing
+the same label, so `benchmark_returns` walks each period's own `priced_from → priced_to`.
+
+Costs are not charged to it. A benchmark is what you could have held by doing nothing, and doing
+nothing does not pay turnover.
+
+`equal_weight` holds one share of everything priced at both ends of a period. A symbol not
+trading across that period is dropped rather than counted as a zero return — it was not a
+holding.
+
 ## Point-in-time universes
 
 A universe csv may carry `from` and `to` columns. When it does, `ctx.universe()` returns the

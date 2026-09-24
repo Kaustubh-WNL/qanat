@@ -47,6 +47,8 @@
   function el(id) { return document.getElementById(id); }
   function pct(x, dp) { return (x == null) ? '—' : (x * 100).toFixed(dp == null ? 2 : dp) + '%'; }
   function sign(x) { return x == null ? '' : (x > 0 ? 'up' : (x < 0 ? 'down' : '')); }
+  //  Dates arrive as timestamps and are only ever read as days here.
+  function day(v) { return v ? String(v).slice(0, 10) : '—'; }
   function esc(t) {
     return String(t).replace(/[&<>]/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
@@ -555,6 +557,14 @@
       '<div class="tile"><div class="k">net<i>after fees and slippage, compounded' +
         (t.net_sum != null ? ' · ' + pct(t.net_sum) + ' summed' : '') + '</i></div>' +
         '<div class="v ' + sign(t.net) + '">' + pct(t.net) + '</div></div>' +
+      //  Only when the project declared something to beat. Without it the tile
+      //  would have to invent a floor, and a made-up benchmark is worse than none:
+      //  it turns "we did not measure this" into a number somebody will quote.
+      (t.benchmark_net != null
+        ? '<div class="tile"><div class="k">excess<i>' + pct(t.benchmark_net) +
+          ' doing nothing instead</i></div>' +
+          '<div class="v ' + sign(t.excess_net) + '">' + pct(t.excess_net) + '</div></div>'
+        : '') +
       '<div class="tile"><div class="k">net / rebalance<i>the edge per decision</i></div>' +
         '<div class="v">' + pct(t.net_per_period, 3) + '</div></div>' +
       '<div class="tile"><div class="k">max drawdown<i>worst fall from a high</i></div>' +
@@ -564,6 +574,7 @@
           ? (t.hit_rate_held * 100).toFixed(0) + '% over the ' + t.held_periods + ' it held'
           : 'rebalances that made money') + '</i></div>' +
         '<div class="v">' + (t.hit_rate * 100).toFixed(0) + '%</div></div>' +
+      barTile() +
       // Only worth a tile when there is something to warn about. A run that held a
       // portfolio throughout has nothing to disclose and should not carry an empty box.
       (t.flat_periods
@@ -597,7 +608,7 @@
                 labels: ['start'].concat(ps.map(function (p) { return p.as_of.slice(0, 10); })),
                 extra: { label: 'drawdown', values: dd } }));
 
-    return head + band + curve + tiles +
+    return head + band + curve + tiles + ledgerPanel() +
       panel('In sample vs out of sample',
             '<span class="faint">IS is the half the settings were chosen on · OOS is the half ' +
             'they were not</span>', segments(seg)) +
@@ -817,12 +828,195 @@
         (t.hit_rate * 100).toFixed(0) + '%';
       return;
     }
-    sum.innerHTML = seg.out_of_sample
+    sum.innerHTML = (seg.out_of_sample
       ? 'OOS <b class="' + sign(seg.out_of_sample.net) + '">' + pct(seg.out_of_sample.net) +
         '</b> · IS <span class="faint">' + pct(seg.in_sample.net) + '</span> · ' +
         t.periods + ' rebalances'
       : 'net <b class="' + sign(t.net) + '">' + pct(t.net) + '</b> · ' + t.periods +
-        ' rebalances · hit rate ' + (t.hit_rate * 100).toFixed(0) + '%';
+        ' rebalances · hit rate ' + (t.hit_rate * 100).toFixed(0) + '%') + trialNote();
+  }
+
+  //  The ledger for whichever alpha is open: every attempt at it, and which
+  //  conversations produced them.
+  //
+  //  It lives under the report rather than on a page of its own because it is the
+  //  context for the number above it. A run read on its own is unjudgeable -- what
+  //  makes it mean something is the seven attempts beside it that did worse, and
+  //  those were invisible until now.
+  var LEDGER = null;
+
+  async function loadLedger(alpha) {
+    if (!alpha) { LEDGER = null; return; }
+    try {
+      var both = await Promise.all([
+        api('/api/trials?limit=60&alpha=' + encodeURIComponent(alpha)),
+        api('/api/alphas/' + encodeURIComponent(alpha) + '/sessions'),
+      ]);
+      LEDGER = { alpha: alpha, count: both[0].count, trials: both[0].trials,
+                 sessions: both[1] };
+    } catch (e) { LEDGER = null; }
+  }
+
+  function ledgerPanel() {
+    if (!LEDGER || !CURRENT || LEDGER.alpha !== CURRENT.alpha) return '';
+    var rows = (LEDGER.trials || []).map(function (t) {
+      var mine = t.run_id === CURRENT.run_id;
+      return '<tr' + (mine ? ' class="on"' : '') + '>' +
+        '<td class="mono faint">' + day(t.created_at) + '</td>' +
+        '<td>' + (t.hypothesis ? esc(t.hypothesis)
+          : '<span class="faint">not recorded</span>') + '</td>' +
+        '<td class="mono faint">' + esc(t.rebalance || '') + ' · ' +
+          esc(String(t.digest || '').slice(0, 6)) + '</td>' +
+        '<td class="n' + sign(t.net) + '">' + pct(t.net) + '</td>' +
+        '<td class="mono">' + (t.disposition
+          ? '<span class="disp d-' + esc(t.disposition) + '">' + esc(t.disposition) + '</span>'
+          : '<span class="faint">—</span>') + '</td></tr>';
+    }).join('');
+    var sess = (LEDGER.sessions || []).map(function (x) {
+      return '<li>' + '<span class="faint mono">' + day(x.started_at) + '</span> ' +
+        esc(x.summary || x.title || x.session_id.slice(0, 8)) +
+        ' <span class="faint">· ' + x.runs + (x.runs === 1 ? ' replay' : ' replays') +
+        '</span></li>';
+    }).join('');
+    return panel('The ledger',
+      '<span class="faint">' + LEDGER.count + ' distinct ' +
+      (LEDGER.count === 1 ? 'question' : 'questions') + ' asked of this alpha · ' +
+      're-running one is the same question, not a new trial</span>',
+      (rows
+        ? '<table class="ledger"><thead><tr><th>when</th><th>what was varied</th>' +
+          '<th>settings</th><th class="n">net</th><th>decided</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody></table>'
+        : '<p class="faint">No attempts recorded yet. An attempt with no hypothesis ' +
+          'beside it is a number nobody can place later.</p>') +
+      (sess ? '<div class="ledger-from"><b>Came out of</b><ul>' + sess + '</ul></div>' : ''));
+  }
+
+  //  The bar, and what it did to this run.
+  //
+  //  It sits with the numbers rather than in a settings page because it is not a
+  //  preference -- it is the thing that decides whether the figure above it is a
+  //  result or a coincidence. And it is editable here for the same reason: a bar
+  //  you have to go and find is a bar nobody adjusts, and one nobody adjusts is
+  //  one nobody believes.
+  var BAR_OPEN = false;
+
+  function barTile() {
+    var v = CURRENT && CURRENT.bar;
+    if (!v) return '';
+    var head, body, cls = '';
+    if (v.rule === 'none') {
+      head = 'not set';
+      body = 'figures are reported and nothing is required of them';
+    } else if (v.t == null) {
+      head = v.rule;
+      body = 'too few periods to say anything about significance';
+    } else {
+      cls = v.clears ? ' up' : ' down';
+      head = 't ' + v.t.toFixed(2) + (v.clears ? ' ≥ ' : ' < ') + v.required.toFixed(2);
+      body = v.note + (v.gate ? ' · gating' : ' · reporting only');
+    }
+    return '<div class="tile tile-bar"><div class="k">bar<i>' + esc(body) + '</i></div>' +
+      '<div class="v' + cls + '">' + esc(head) + '</div>' +
+      '<button type="button" class="chip barset" id="bar-set">' +
+        (BAR_OPEN ? 'close' : 'change') + '</button>' +
+      (BAR_OPEN ? barForm(v) : '') + '</div>';
+  }
+
+  function barForm(v) {
+    var rules = ['none', 'floor', 'count'];
+    var notes = {
+      none: 'report the figures, require nothing',
+      floor: 'a fixed t-stat, whatever was tried to get here',
+      count: 'divide the significance by the number of trials — the one that ' +
+             'answers "was this just the luckiest of fifty"',
+    };
+    return '<div class="barform" id="bar-form">' +
+      rules.map(function (r) {
+        return '<button type="button" class="chip barrule' + (v.rule === r ? ' on' : '') +
+          '" data-rule="' + r + '">' + r + '</button>';
+      }).join('') +
+      '<p class="why">' + esc(notes[v.rule] || '') + '</p>' +
+      (v.rule === 'count'
+        ? '<label class="f"><span>alpha</span><input id="bar-alpha" type="number" ' +
+          'step="0.01" min="0.001" max="0.999" value="' + (v.alpha || 0.05) + '"></label>'
+        : v.rule === 'floor'
+          ? '<label class="f"><span>t floor</span><input id="bar-t" type="number" ' +
+            'step="0.1" min="0" value="' + (v.t_floor || 3) + '"></label>'
+          : '') +
+      (v.rule !== 'none'
+        ? '<label class="f"><span>gate</span><input id="bar-gate" type="checkbox"' +
+          (v.gate ? ' checked' : '') + '></label>' +
+          '<p class="why">Gating means failing this blocks a decision rather than ' +
+          'only reporting. Loosening the bar is logged either way, with who did it.</p>'
+        : '') +
+      '<button type="button" class="btn go" id="bar-save">set the bar</button></div>';
+  }
+
+  //  How many distinct questions this answer was picked out of.
+  //
+  //  It sits with the headline rather than on a page of its own because it is not
+  //  context -- it is part of the number. The same Sharpe means opposite things at
+  //  one attempt and at fifty, and nothing else on this page can tell you which
+  //  one you are looking at.
+  //
+  //  Shown only past the first, because "1 of 1" is noise.
+  function trialNote() {
+    var n = CURRENT && CURRENT.trials;
+    if (!n || n < 2) return '';
+    return ' · <span class="faint" title="distinct configurations replayed for this ' +
+      'alpha. Re-running one is the same question, not a new trial">1 of ' + n +
+      ' trials</span>';
+  }
+
+  function wireBar() {
+    var open = el('bar-set');
+    if (open) open.onclick = function () {
+      BAR_OPEN = !BAR_OPEN;
+      paint();
+      //  The form grows downward out of a tile that is already halfway down the
+      //  page, so on a short window opening it put the controls below the fold
+      //  and the click looked like it had done nothing.
+      if (BAR_OPEN) {
+        var f = el('bar-form');
+        if (f && f.scrollIntoView) f.scrollIntoView({ block: 'nearest' });
+      }
+    };
+    Array.prototype.forEach.call(document.querySelectorAll('[data-rule]'), function (b) {
+      b.onclick = function () {
+        //  Painted from the chosen rule before it is saved, so the fields that
+        //  belong to it appear as soon as it is picked.
+        CURRENT.bar = Object.assign({}, CURRENT.bar, { rule: b.getAttribute('data-rule') });
+        paint();
+      };
+    });
+    var save = el('bar-save');
+    if (save) save.onclick = async function () {
+      var v = CURRENT.bar || {};
+      var payload = { rule: v.rule || 'none' };
+      var a = el('bar-alpha'), t = el('bar-t'), g = el('bar-gate');
+      if (a) payload.alpha = parseFloat(a.value);
+      if (t) payload.t_floor = parseFloat(t.value);
+      if (g) payload.gate = !!g.checked;
+      save.disabled = true;
+      try {
+        var r = await api('/api/bar', {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        BAR_OPEN = false;
+        //  Re-read the run so the verdict is recomputed against the new bar
+        //  rather than guessed at here.
+        if (r.loosened && window.Thread) {
+          window.Thread.said('agent', 'The bar was loosened. That is recorded with ' +
+                             'who did it — lowering one is sometimes right, and it ' +
+                             'should always be findable.');
+        }
+        select(CURRENT.run_id);
+      } catch (e) {
+        save.disabled = false;
+        save.textContent = e.message || 'could not set it';
+      }
+    };
   }
 
   function paint() {
@@ -846,6 +1040,7 @@
     if (main) main.scrollTop = keep;
     var add = el('book-add');
     if (add) add.onclick = function () { window.AlphaEdit.open(null); };
+    wireBar();
     var why = el('corr-why');
     if (why) {
       why.onclick = function () {
@@ -1032,6 +1227,9 @@
       DETAIL = null;      // the whole period, not a single rebalance
       VIEW = 'all';
       RANGE = null;
+      //  Fetched with the run rather than lazily: the ledger is what makes the
+      //  number readable, so it should not arrive a beat after it.
+      await loadLedger(CURRENT.alpha);
     } catch (e) {
       CURRENT = null;
       el('bt-detail').innerHTML = '<div class="bt-empty bad">' + esc(e.message) + '</div>';

@@ -138,6 +138,14 @@ reads and changes appears in the thread as it happens and the panel beside it fo
 about a table and the table opens, ask for a replay and the equity curve is what you are looking at
 when the answer lands.
 
+Which agent answers is a setting, not an accident of `PATH`:
+
+```yaml
+agent:
+  cli: claude       # empty means the first one found
+  timeout: 180s     # one question's limit; a research pass wants more
+```
+
 The full tool list is in
 **[docs/agents.md](https://github.com/fidetolabs/qanat/blob/main/docs/agents.md)**, and what the
 console does with it is in
@@ -277,6 +285,24 @@ stops paying fees for noise:
   --decay 4            25.32    -2.88%
 ```
 
+**Net alone cannot be ranked.** Two strategies that earned the same amount are not the same
+strategy if one of them halved on the way, and a long-only rule in a rising market is not skill.
+So the report prints what the return cost in risk, and what it beat:
+
+```
+    net              +12.309%  compounded
+    benchmark         +3.002%  doing nothing instead
+    excess            +9.307%  what the rule added
+    ...
+    sharpe              0.68   per unit of its own vol, annualised at 73/yr
+    max drawdown     -11.288%  worst fall from a high
+```
+
+Set `benchmark:` to a symbol in your price table, or to `equal_weight` — hold the whole universe
+in equal parts, which is the honest floor for a rule whose claim is that it picks better than
+picking nothing. Without one the benchmark lines are absent rather than zero: a project that has
+not measured this should not be able to read a number as though it had.
+
 **In sample and out of sample are reported separately.** `--split <date>` cuts the run in two. The
 lookback, the rebalance and the decay were all chosen by someone who could see the first half, so
 that number partly measures the choosing:
@@ -292,6 +318,90 @@ Several strategies can be priced together as one book with
 one PnL table.
 
 More in **[docs/backtest.md](https://github.com/fidetolabs/qanat/blob/main/docs/backtest.md)**.
+
+## How many did you try?
+
+A Sharpe of 2.2 from one attempt is interesting. The same figure picked out of fifty is what
+noise looks like — and nothing inside a backtest can tell you which one you are holding.
+
+So every replay is a row in a ledger, and the count travels with the number:
+
+```
+    net 8.49%  ·  81 rebalances  ·  hit rate 47%  ·  1 of 8 trials
+```
+
+A trial is a **distinct question**, not a run. Re-running the same configuration gives the same
+answer, so it is one trial; changing the lookback, the window, the universe, the rebalance or the
+split is a new one. The digest already draws that line, so it is the key.
+
+Record what an attempt was *for* with `POST /api/trials` — or the `record_trial` tool — giving it
+a one-line hypothesis and the run it varied. Do it for the ones that failed especially: those are
+the count that makes a surviving number mean anything, and they are the one thing nobody writes
+down.
+
+### The bar
+
+`backtest.bar` decides how high a result has to be, given how many were tried:
+
+```yaml
+backtest:
+  bar:
+    rule: count      # none · floor · count
+    alpha: 0.05      # the significance one test would have needed
+    gate: false      # whether failing it refuses anything, or only says so
+```
+
+`floor` is a fixed t-stat whatever was tried. `count` divides the significance by the number of
+trials, which is the one that answers *was this just the luckiest of fifty*. `t` here is the
+annualised Sharpe times the square root of the years covered — so a good ratio measured over
+three months is not the same evidence as the same ratio over ten years.
+
+Off by default, and reporting-only by default. With `gate: true` the one thing it refuses is
+marking a run `live` when it has not cleared; measuring is always allowed. Every change to the
+bar is written to the event log with who made it, and loosening it is logged as a warning —
+because whoever is proposing strategies should not be able to quietly lower the line that judges
+them.
+
+## Sessions
+
+The console keeps the conversations. Each one holds what was asked, what the agent did about it,
+what it cost, and the replays that came out of it — and writes itself a summary when it closes,
+by resuming the session and asking it what happened.
+
+Open past sessions from **Session** in the left rail. Picking one and continuing it hands the id
+back to the CLI as `--resume`, so the agent gets its own transcript rather than a paraphrase. If
+the CLI no longer holds it, the summary goes into the brief instead.
+
+A session that ran no replay simply shows none. Most sessions are a question and an answer.
+
+## Working while you are not
+
+```yaml
+research:
+  enabled: true
+  schedule: 0 3 * * *
+  goal: falsify        # falsify · monitor
+  budget_usd: 1.0
+  targets: 1
+```
+
+`falsify` takes the strategy with the fewest recorded trials and tries to **break** it — other
+windows, other universes, wider and narrower rebalances, higher costs than the project assumes —
+recording every attempt as it goes. It may not edit the strategy: a pass that improves the thing
+it was measuring has measured nothing.
+
+It is the one goal that cannot overfit. Everything it can produce takes confidence away.
+
+`monitor` compares what a live strategy has earned since the frontier against what its backtest
+implied, and invents nothing either.
+
+**Searching for new strategies is deliberately not here.** A loop that proposes and keeps winners
+is an overfitting machine wearing a cron expression; it needs the bar gating rather than
+reporting first. What is here instead is the part that makes such a loop survivable later: the
+count, and the refutations.
+
+The budget is measured, not estimated — the CLI reports what each run cost, so a pass that turns
+out expensive stops on the way through. Watch one from **Session → research → run a pass**.
 
 ## Strategies on the shelf
 
@@ -342,7 +452,9 @@ else has run it yet. If something breaks or looks wrong, open an
 [Discord](https://discord.gg/JUmwATScS8).
 
 Working end to end: the pipeline and its rules, the DuckDB and Postgres store, the console, cron
-scheduling, Docker, the point-in-time replay engine with its net-edge report, and the MCP server.
+scheduling, Docker, the point-in-time replay engine with its net-edge report, the MCP server,
+sessions with resume and summaries, the trial ledger and its bar, and the unattended
+falsification pass.
 
 Scoring forward is implemented: switch `live: true` on, name the alpha in `live_alphas:`, and
 `qanat serve` prices a pass every time the data reaches the next rebalance date. It stamps the
@@ -350,11 +462,15 @@ frontier once, so what happens after it is the one sense of out-of-sample that c
 by looking.
 
 Not implemented: backfills, incremental windows, and live trading. Qanat produces a portfolio, on
-history and going forward. It does not place an order.
+history and going forward. **It does not place an order**, and stops at the point where money
+would move.
 
-**One limit worth knowing before you trust a number.** There is no benchmark. Nothing separates
-your edge from the market's own move, so a long-only strategy in a rising market looks good and
-the report cannot tell you why.
+**Two limits worth knowing before you lean on the honesty machinery.** The window is not sealed:
+the point-in-time views stop a *step* seeing the future, but nothing stops the agent reading past
+a date while it decides what to try. And the search goal is absent — a loop that proposes
+strategies and keeps the winners needs that seal, and the bar gating rather than reporting,
+before it is anything other than an expensive way to fool yourself. What is here is the part that
+makes such a loop survivable later: the count, and the refutations.
 
 Qanat runs one kind of pipeline, the kind that ends in a portfolio. Airflow, Dagster and Prefect
 handle arbitrary DAGs and distributed execution. Reach for those when you need them.

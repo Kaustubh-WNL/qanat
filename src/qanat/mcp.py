@@ -748,6 +748,147 @@ def _remove_step(s: Session, args: dict) -> Any:
     return {"removed": args["id"], "warnings": written}
 
 
+@tool("read_bar",
+      "How high a result has to be in this project, given how many were tried to find it -- "
+      "and what the bar currently does to the newest run. Read this before claiming a strategy "
+      "works: the same Sharpe means opposite things at one attempt and at fifty, and nothing "
+      "inside a backtest can tell you which you are looking at.",
+      {"properties": {}, "required": []})
+def _read_bar(s: Session, args: dict) -> Any:
+    bt = s.project.backtest
+    bar = getattr(bt, "bar", None) if bt else None
+    return {
+        "bar": bar.model_dump() if bar else None,
+        "trials": s.store.trial_count(),
+        "changes": s.store.bar_history(5),
+    }
+
+
+@tool("set_bar",
+      "Set how high a result has to be. `rule` is none (report only), floor (a fixed t-stat "
+      "whatever was tried) or count (divide the significance by the number of trials, which is "
+      "the one that answers 'was this just the luckiest of fifty'). `gate` decides whether "
+      "failing it blocks anything or only says so.\n\n"
+      "Every change is recorded with who made it, and loosening the bar is logged as a "
+      "warning. That is not an accusation -- lowering a bar is sometimes right -- but you are "
+      "the thing proposing strategies, so a bar that moved just before one was promoted needs "
+      "to be a visible fact. If a result does not clear the bar, say so; do not move the bar "
+      "to make it fit.",
+      {"properties": {
+          "rule": {"type": "string", "description": "none, floor or count"},
+          "t_floor": {"type": "number",
+                      "description": "the fixed bar for `floor`. 3.0 is what Harvey, Liu and "
+                                     "Zhu argued for after counting how many factors had "
+                                     "already been tested"},
+          "alpha": {"type": "number",
+                    "description": "the significance one test would have needed, before it is "
+                                   "divided by the number of tests. For `count`"},
+          "gate": {"type": "boolean",
+                   "description": "whether failing this stops anything, or only reports"},
+      }, "required": ["rule"]},
+      writes=True)
+def _set_bar(s: Session, args: dict) -> Any:
+    from qanat.editor import EditorError, set_bar
+
+    bt = s.project.backtest
+    was = getattr(bt, "bar", None) if bt else None
+    try:
+        warnings = set_bar(s.project, s.root, dict(args))
+    except EditorError as exc:
+        raise ToolError(str(exc)) from exc
+    s.reload()
+    now = s.project.backtest.bar
+
+    def strength(b: Any) -> tuple[int, float]:
+        if b is None or getattr(b, "rule", "none") == "none":
+            return (0, 0.0)
+        if b.rule == "floor":
+            return (1 if b.gate else 0, float(b.t_floor))
+        return (1 if b.gate else 0, 1.0 / max(1e-9, float(b.alpha)))
+
+    loosened = strength(now) < strength(was)
+    s.store.event("warn" if loosened else "info", "bar",
+                  f"bar set to {now.rule}" + (" (loosened)" if loosened else ""))
+    return {"bar": now.model_dump(), "loosened": loosened, "warnings": warnings}
+
+
+@tool("record_trial",
+      "Say what a replay was an attempt at: its hypothesis, what it was a variation of, and "
+      "what you decided about it. Call this after every backtest, whether it worked or not -- "
+      "especially when it did not. The attempts that failed are the count that makes a "
+      "surviving number mean anything, and they are the one thing nobody writes down. Do not "
+      "record a conclusion the run did not reach: one replay that lost money is a result for "
+      "that configuration, not evidence the idea is wrong.\n\n"
+      "`disposition: live` is the one value that can be refused. When the project's bar is set "
+      "to gate and the run does not clear it, this call fails and says why. That is not "
+      "something to work around by moving the bar -- report that it did not clear.",
+      {"properties": {
+          "run_id": {"type": "integer", "description": "the backtest this describes"},
+          "hypothesis": {"type": "string",
+                         "description": "one line: what you were testing, in plain English"},
+          "parent_run_id": {"type": "integer",
+                            "description": "the run this varies, when it varies one. A sweep "
+                                           "reads as a sweep rather than as eight unrelated "
+                                           "runs"},
+          "disposition": {"type": "string",
+                          "description": "live, candidate, shelved or refuted"},
+          "seal": {"type": "string",
+                   "description": "the date the search was clipped to, when it was"},
+          "proposed_by": {"type": "string",
+                          "description": "which model suggested it. Two runs proposed by "
+                                         "different models are not the same trial"},
+      }, "required": ["run_id"]},
+      writes=True)
+def _record_trial(s: Session, args: dict) -> Any:
+    run_id = int(_need(args, "run_id"))
+    if s.store.backtest(run_id) is None:
+        raise ToolError(f"no backtest {run_id}")
+    allowed = {"", "live", "shelved", "refuted", "candidate"}
+    disposition = str(args.get("disposition") or "").strip()
+    if disposition not in allowed:
+        raise ToolError(f"disposition must be one of {sorted(allowed - {''})}")
+    #  Same gate as the HTTP door. The agent reaching the project either way
+    #  must meet the same bar, or the bar is a property of which client you
+    #  happened to use.
+    if disposition == "live":
+        from qanat.backtest import gate_promotion
+
+        why = gate_promotion(s.store, s.project, run_id)
+        if why:
+            raise ToolError(why)
+    s.store.annotate_trial(
+        run_id,
+        hypothesis=str(args.get("hypothesis") or "").strip(),
+        parent_run_id=int(args.get("parent_run_id") or 0),
+        disposition=disposition,
+        seal=str(args.get("seal") or "").strip(),
+        proposed_by=str(args.get("proposed_by") or "").strip(),
+    )
+    return {"run_id": run_id, "trials": s.store.trial_count()}
+
+
+@tool("list_trials",
+      "The ledger: every attempt this project has replayed, and how many distinct questions "
+      "they amount to. `count` is the number that makes a result judgeable -- a Sharpe of 2.2 "
+      "from one attempt is interesting, and the same figure picked out of fifty is what noise "
+      "looks like. Nothing inside a backtest can tell those apart, so read this before "
+      "quoting one.",
+      {"properties": {
+          "alpha": {"type": "string",
+                    "description": "scope the count to one strategy. The number that matters "
+                                   "is the size of the set the winner was chosen from: leave "
+                                   "this out when comparing several strategies"},
+          "limit": {"type": "integer", "description": "how many rows, newest first"},
+      }, "required": []})
+def _list_trials(s: Session, args: dict) -> Any:
+    alpha = str(args.get("alpha") or "").strip()
+    return {
+        "alpha": alpha,
+        "count": s.store.trial_count(alpha),
+        "trials": s.store.trials(alpha, int(args.get("limit") or 200)),
+    }
+
+
 @tool("save_universe",
       "Add or replace a universe: the symbols a portfolio may hold. Pass `symbols` and the csv "
       "is written for you. Every shelf alpha holds itself to one, so a project with none cannot "

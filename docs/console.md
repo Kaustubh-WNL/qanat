@@ -81,3 +81,35 @@ the stage contract when you apply it. There is no separate console state to fall
 Comments in that file survive the write. The new values are laid onto the tree parsed from the
 file rather than dumped over it, so a note against a step is still there after the step beside it
 is edited.
+
+
+## The left rail is the session, and now the sessions
+
+**Session** in the rail header opens the history. Each row is one conversation with its summary,
+how many questions it held, what it cost, and how many replays came out of it — and a row with no
+replays shows none, because most sessions are a question and an answer.
+
+Opening one shows the transcript: the question, the tool lines, and the answer rendered through
+the live thread's own markdown, so a past reply looks exactly as it did when it arrived.
+
+Two copies of each conversation exist on purpose. The CLI's transcript is what `--resume` reads
+and cannot be rendered; the one kept here is what a person re-reads and cannot be resumed from.
+
+**research** sits above the list, because a pass *is* a session. It says what it would work on
+whether or not it is switched on — a schedule whose target nobody can predict is a schedule
+nobody trusts — and `run a pass` fires one now so you can watch what an unattended one does
+before trusting it at three in the morning.
+
+## The ledger sits under the report
+
+Every attempt at the open alpha, what was varied, and what was decided about it. It is not a
+separate page because it is the context for the number above it: a run read on its own is
+unjudgeable, and what makes it mean something is the seven attempts beside it that did worse.
+
+`refuted` is coloured to be found quickly.
+
+## The bar tile is a control
+
+It is the only tile you can change from, and that is deliberate: a bar you have to go and find is
+a bar nobody adjusts, and one nobody adjusts is one nobody believes. It reads the rule, the
+divisor, the threshold that produced, and whether this run cleared it.
