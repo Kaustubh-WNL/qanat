@@ -9,7 +9,7 @@ pipeline**: no narrative table feeds a weights table, and no alpha reads a proba
 is not a signal. It is what a person reads before deciding what to test, and the page exists to
 make that decision recorded, dated and answerable instead of remembered.
 
-## A narrative is a question on a schedule
+## A narrative is a question the user wrote
 
 The user writes it. The agent never does.
 
@@ -17,17 +17,58 @@ The user writes it. The agent never does.
 narratives:
   - id: ai_capex
     question: "Will tech companies keep increasing spend on AI and data centres?"
-    schedule: "0 6 * * *"          # daily, the default
     resolution: "reported capex up more than 10% year over year"
+    schedule: "0 6 * * *"          # optional. Without it, readings happen when asked for
 ```
 
-Ingestion is a `Source` in everything but name: one connector, one schedule, one table of rows with
-a time column. That is not an analogy for convenience — it is why the scheduler, `qanat plan`'s
-drift detection, the run log, the as-of views and the lookahead check all apply to news without
-being written twice.
+Ingestion is a `Source` in everything but name: one connector, one table of rows with a time column,
+and a `schedule:` that may be absent. That is not an analogy for convenience — it is why the
+scheduler, `qanat plan`'s drift detection, the run log, the as-of views and the lookahead check all
+apply to news without being written twice.
 
-A narrative is `live` or not. Live means ingest now and keep ingesting; not live means the schedule
-stops, rather than the page being hidden while the bill continues.
+## Two modes, because most people have no machine that stays on
+
+`schedule:` unset is the default, and the scheduler already behaves correctly for it: it collects
+`[j for j in project.jobs if j.schedule]`, so a narrative without one is not skipped by accident but
+by design. A person triggers a reading when they want one, and `fire(job_id, actor=...)` already
+records who asked — a manual reading and a six-in-the-morning reading are distinguishable in the log
+without a new field.
+
+| | scheduled | asked for |
+| --- | --- | --- |
+| who fires it | the cron line | a person |
+| gaps | none, while live | whatever the person leaves |
+| a flat line means | the reading did not change | **nobody looked** |
+
+That last row is the whole cost of the second mode, and it is invisible on a chart. Two readings
+three weeks apart draw the same shape as two readings a day apart, and the shape says "stable" in
+both cases. Only one of them measured anything.
+
+So a reading carries the window it read, not just its article count:
+
+```
+covers_from · covers_to · n_articles
+```
+
+`340 articles across 21 days` and `12 articles across 1 day` are different claims, and the second
+one being flat is evidence while the first one being flat is mostly arithmetic. The chart draws
+observed readings as points and does not interpolate between two it did not watch — a dashed run
+between distant readings, not a confident line.
+
+**Prices can be backfilled; news cannot.** This is the asymmetry that decides how much manual mode
+costs. A person who skips three weeks of price history loses nothing: the prices are still there
+when they next run a pass, and a replay over that window prices it correctly whenever it happens.
+News is not like that. A gap in ingestion is a hole in the corpus, because news APIs stop looking
+back after a while and what a search still surfaces months later is the articles that turned out to
+matter — which is survivorship bias, arriving through the corpus rather than the universe.
+
+So a manual trigger ingests **the whole gap since the last reading**, not the day it was pressed,
+and says so when the gap runs past what the source can still answer for. The reading that follows a
+long silence is the one to distrust.
+
+A narrative is `live` or not. Live means it ingests — on its schedule if it has one, on request if
+it does not. Not live means nothing runs, rather than the page being hidden while the bill
+continues.
 
 ## The three stances are fixed by the question
 
@@ -55,7 +96,7 @@ stance a probability and the reason for it.
 | | |
 | --- | --- |
 | `narrative` | which question |
-| `as_of` | one point on the narrative's schedule grid |
+| `as_of` | when this reading was taken -- a cron firing, or the moment somebody asked |
 | `text` | the agent's reading of the news up to here |
 | per stance | `probability`, `reason`, `n_articles` |
 
@@ -66,8 +107,9 @@ Rules that hold without exception:
 * **The probabilities are whole numbers summing to 100.** Not 0.55. Three floats do not sum to
   exactly 1.0, and three probabilities summing to 1.2 are not close enough to anything; they are
   meaningless. Whole percents make the check exact: `sum == 100`. An even split is 34/33/33.
-* **One reading per as-of.** A second pass over the same date is the same question asked twice,
-  which is the line the backtest digest already draws between a trial and a run.
+* **One reading per as-of.** `as_of` is a moment rather than a date, so two readings on one
+  afternoon are two readings -- a person who asks again after fresh news has asked a second
+  question, and only a re-run of the same firing is the same one asked twice.
 * **Nothing is ever updated or deleted.** The chart is the history, so the history is the storage.
   A user can open any past date and see the text, the numbers and the reasons that were there.
 
@@ -84,6 +126,11 @@ do over the following quarter?*
 
 No deadline is needed. A rolling window over a stable stance does the same work, which is a second
 thing fixed stances buy.
+
+Readings that were asked for rather than scheduled are a biased sample: people check in when
+something is happening. So a calibration figure carries its mode alongside its count, and figures
+from the two modes are not pooled. A narrative watched daily by a cron and one visited whenever the
+news looked dramatic have not answered the same question about their agent.
 
 Two things that must not be presented as a score:
 
@@ -140,9 +187,19 @@ So a checkpoint's `as_of` **is** the frontier for every run derived from it, and
 examination rather than a test: does it break at higher fees, does it hold anything, what does the
 drawdown path look like. Useful, and not evidence.
 
-The good part is structural. A live narrative manufactures its own out-of-sample by doing nothing but
-staying live: check point on Tuesday, and a month later there are forward periods nobody could have
+The good part is structural. A narrative manufactures its own out-of-sample by nothing more than
+time passing: checkpoint on Tuesday, and a month later there are forward periods nobody could have
 looked at. `live: true` and `live_from` already produce and stamp exactly this.
+
+Without a machine that stays on, that evidence is **discovered late rather than lost**. The prices do
+not care when the pass ran: a replay over the forward window, run whenever the person next opens the
+project, prices those periods exactly as a nightly `qanat serve` would have. What a person on a
+laptop gives up is knowing sooner, and a stamped `live_from` that begins where they started rather
+than where they eventually looked -- which is why it is stamped on the first pass that lands, not
+computed fresh.
+
+Which is the opposite of the news side, and worth holding both in mind at once: forward price
+evidence survives being ignored, and forward news does not.
 
 ## The probabilities are the allocation
 
@@ -201,6 +258,11 @@ to do with searching.
 
 So floating is a mode a person chooses knowingly, labelled as what it measures.
 
+It is less unruly on a narrative nobody schedules. Readings arrive when somebody asks for one, so a
+floating allocation moves a handful of times a quarter rather than nightly, and the count of distinct
+strategies stays small enough to mean something. The mode that makes floating dangerous is the one
+that ingests on a cron.
+
 ## A new source needs its window shown, not just its price
 
 The agent may propose sources, and a person confirms. What the confirmation shows: the connector,
@@ -221,9 +283,9 @@ Five, and each means one thing.
 
 | Word | What it is |
 | --- | --- |
-| **narrative** | A question the user wrote, ingesting news on a schedule. Live or not. Never edited. |
+| **narrative** | A question the user wrote, ingesting news on a schedule or when asked. Live or not. Never edited. |
 | **stance** | One of the three futures a narrative has: positive, neutral, negative. Fixed by the question. Nothing authors them and nothing replaces them. |
-| **reading** | Where a narrative stands on one as-of date: the agent's text, and a probability with a reason for each stance. Appended, never replaced. The three sum to 100. |
+| **reading** | Where a narrative stands at one moment: the agent's text, a probability with a reason for each stance, and the window of news it read. Appended, never replaced. The three sum to 100. |
 | **checkpoint** | A reading and the run it produced. What ties a strategy back to what was believed when it was built, and the frontier for everything that run is measured on. |
 | **resolution** | The rule that decides whether the positive or negative future happened. Written once, at creation. What makes a reading scoreable. |
 
