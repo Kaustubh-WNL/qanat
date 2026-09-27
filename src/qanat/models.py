@@ -242,9 +242,19 @@ class Backtest(Base):
     # What the strategy has to beat to have earned anything. Without one, a
     # long-only rule in a rising market reads as skill and the report cannot say
     # otherwise -- every number it prints is the market's move plus yours, with no
-    # seam between them. Either a symbol in the prices table, or `equal_weight`:
-    # hold the whole universe in equal parts, which is the honest floor for a rule
-    # whose whole claim is that it picks better than picking nothing.
+    # seam between them. Three things it can be:
+    #
+    #   * a symbol in the prices table -- hold that one thing instead.
+    #   * `equal_weight` -- hold everything the prices table carries, in equal
+    #     parts. The market, as far as this project has one.
+    #   * `universe_equal_weight` -- hold the run's universe on each date, in equal
+    #     parts. The pool the step was choosing from, held without choosing.
+    #
+    # The last two are different questions, and which one is the honest floor
+    # depends on what the strategy claims. A rule that only ranks inside a pool
+    # somebody else chose is answerable to `universe_equal_weight`: beating the
+    # whole market by riding a sector that doubled is not evidence it picked well.
+    # Where the prices table and the universe are the same list, so are the two.
     benchmark: str = ""
     #: What a result has to clear before it counts, given how many were tried.
     bar: Bar | None = None

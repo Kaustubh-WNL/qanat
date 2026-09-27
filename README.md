@@ -298,10 +298,13 @@ So the report prints what the return cost in risk, and what it beat:
     max drawdown     -11.288%  worst fall from a high
 ```
 
-Set `benchmark:` to a symbol in your price table, or to `equal_weight` — hold the whole universe
-in equal parts, which is the honest floor for a rule whose claim is that it picks better than
-picking nothing. Without one the benchmark lines are absent rather than zero: a project that has
-not measured this should not be able to read a number as though it had.
+Set `benchmark:` to a symbol in your price table, or to one of two floors that hold a list in equal
+parts — `equal_weight` takes everything the price table carries, and `universe_equal_weight` takes
+the run's universe on each date. The first asks whether the rule beat the market. The second asks
+whether it beat *the pool it narrowed to*, which is the harder question and the one a rule that only
+ranks inside a sector is actually answerable to. Without a benchmark the lines are absent rather
+than zero: a project that has not measured this should not be able to read a number as though it
+had.
 
 **In sample and out of sample are reported separately.** `--split <date>` cuts the run in two. The
 lookback, the rebalance and the decay were all chosen by someone who could see the first half, so
@@ -361,6 +364,25 @@ marking a run `live` when it has not cleared; measuring is always allowed. Every
 bar is written to the event log with who made it, and loosening it is logged as a warning —
 because whoever is proposing strategies should not be able to quietly lower the line that judges
 them.
+
+## Which part earned it
+
+A hypothesis that names a sector and a rule that ranks inside it are two different claims, and a
+replay prices them together. The one about the world lives in the **universe**; the arithmetic
+lives in the **step**. Because a universe is a swappable argument, the first can be switched off
+and the second held:
+
+```
+    net                          +14.2%
+    same rule, base universe     +13.6%
+    the idea was worth            +0.6%
+```
+
+Which is why an agent building a pipeline has to write a universe with dates, not a list of
+symbols inside a script: a filter buried in code cannot be turned off, so it cannot be priced —
+and a list chosen today, applied to the past, credits survivorship bias to the idea.
+
+More in **[docs/attribution.md](https://github.com/fidetolabs/qanat/blob/main/docs/attribution.md)**.
 
 ## Sessions
 

@@ -879,6 +879,133 @@ def test_equal_weight_benchmark_prices_on_the_same_boundaries():
     assert benchmark_returns(prices, ps, "") is None
 
 
+def test_the_universe_benchmark_holds_the_pool_and_not_the_market():
+    """`equal_weight` asks whether the rule beat the market. This one asks the
+    harder question: whether holding the pool would have done the same."""
+    import pandas as pd
+
+    from qanat.backtest import benchmark_returns
+
+    ps = _ps([0.0, 0.0])
+    idx = pd.to_datetime([p.priced_from for p in ps] + [ps[-1].priced_to])
+    prices = pd.DataFrame({"AAA": [100.0, 110.0, 110.0],    # +10%, then flat
+                           "BBB": [100.0, 90.0, 99.0]},     # -10%, then +10%
+                          index=idx)
+    only_aaa = pd.DataFrame({"symbol": ["AAA"]})
+
+    assert benchmark_returns(prices, ps, "equal_weight") == pytest.approx([0.0, 0.05])
+    # the same periods, priced over one name instead of two
+    assert benchmark_returns(prices, ps, "universe_equal_weight",
+                             only_aaa) == pytest.approx([0.10, 0.0])
+    # without the universe it is absent rather than quietly falling back to the market
+    assert benchmark_returns(prices, ps, "universe_equal_weight") is None
+
+
+def test_the_universe_benchmark_moves_as_the_pool_moved():
+    """Membership is read from the day the portfolio was decided. A floor that held
+    today's list on every past date would carry the survivorship bias it exists to
+    keep out of the comparison."""
+    import pandas as pd
+
+    from qanat.backtest import benchmark_returns
+
+    ps = _ps([0.0, 0.0])
+    idx = pd.to_datetime([p.priced_from for p in ps] + [ps[-1].priced_to])
+    prices = pd.DataFrame({"AAA": [100.0, 110.0, 110.0], "BBB": [100.0, 90.0, 99.0]}, index=idx)
+    #  BBB joins on the second as-of date, so the first period is AAA alone
+    joins_late = pd.DataFrame({"symbol": ["AAA", "BBB"],
+                              "from": ["", ps[1].as_of], "to": ["", ""]})
+
+    got = benchmark_returns(prices, ps, "universe_equal_weight", joins_late)
+    assert got == pytest.approx([0.10, 0.05])      # AAA alone, then both
+    #  and the same file read without its dates is the bias, stated as a number
+    flat = pd.DataFrame({"symbol": ["AAA", "BBB"]})
+    assert benchmark_returns(prices, ps, "universe_equal_weight",
+                             flat) == pytest.approx([0.0, 0.05])
+
+
+def test_the_universe_benchmark_names_symbols_the_way_the_prices_do():
+    """A project that calls the column something else still gets a floor."""
+    import pandas as pd
+
+    from qanat.backtest import benchmark_returns
+
+    ps = _ps([0.0])
+    idx = pd.to_datetime([ps[0].priced_from, ps[0].priced_to])
+    prices = pd.DataFrame({"AAA": [100.0, 110.0], "BBB": [100.0, 90.0]}, index=idx)
+
+    ticker = pd.DataFrame({"ticker": ["AAA"]})
+    assert benchmark_returns(prices, ps, "universe_equal_weight",
+                             ticker, "ticker") == pytest.approx([0.10])
+    # a file with no symbol column under any known name prices nothing, and nothing
+    # is flat rather than an exception
+    assert benchmark_returns(prices, ps, "universe_equal_weight",
+                             pd.DataFrame({"x": [1]})) == pytest.approx([0.0])
+
+
+def test_a_run_is_measured_against_the_pool_it_was_given(tmp_path: Path):
+    """The two floors answer different questions, so a run narrowed to two names
+    should not be able to read `beat the market` as `picked well`."""
+    from qanat.models import Universe
+
+    store, project, root = _ready(tmp_path)
+    assert project.backtest is not None
+    narrow = root / "universes" / "two.csv"
+    narrow.write_text("symbol,from,to\nAAPL,,\nMSFT,,\n")
+    project.universes.append(Universe(id="two", symbols="./universes/two.csv"))
+
+    project.backtest.benchmark = "equal_weight"
+    market = run_backtest(store, project, root, universe="two", **_window(store))
+    project.backtest.benchmark = "universe_equal_weight"
+    pool = run_backtest(store, project, root, universe="two", **_window(store))
+
+    #  The same strategy, priced the same way, against two different floors. The
+    #  eight-name market and the two names it was allowed to hold are not the same
+    #  question, and the report now says which one it answered.
+    assert market.conditions["benchmark"] == "equal_weight"
+    assert pool.conditions["benchmark"] == "universe_equal_weight"
+    assert market.totals["net"] == pytest.approx(pool.totals["net"])
+    assert market.totals["benchmark_net"] != pytest.approx(pool.totals["benchmark_net"])
+
+
+#: An alpha that holds whatever the prices table carries. A step only needs
+#: `universe:` when its script asks for one, so this is the shape of run that has
+#: no pool to be measured against -- and the one `universe_equal_weight` has to
+#: refuse rather than answer with the market.
+POOLLESS_ALPHA = """\
+import pandas as pd
+
+
+def run(ctx):
+    df = ctx.read("features.momentum")[["symbol", "as_of", "momentum"]]
+    picked = df.nlargest(4, "momentum").copy()
+    if picked.empty:
+        return pd.DataFrame(columns=["symbol", "weight", "as_of"])
+    picked["weight"] = 1.0 / len(picked)
+    return picked[["symbol", "weight", "as_of"]]
+"""
+
+
+def test_the_pool_floor_is_absent_when_there_is_no_pool(tmp_path: Path):
+    """Absent rather than quietly falling back to the market, and it says why.
+
+    A run with no universe has no pool, and the market is not a stand-in for one:
+    answering a question nobody asked is how a floor ends up flattering a rule.
+    """
+    store, project, root = _ready(tmp_path)
+    assert project.backtest is not None
+    project.backtest.benchmark = "universe_equal_weight"
+    alpha = next(st for st in project.steps if st.id == "portfolio")
+    (root / alpha.script).write_text(POOLLESS_ALPHA)
+    alpha.universe = None
+
+    res = run_backtest(store, project, root, **_window(store))
+    assert res.periods, "the run itself should still price -- it is the floor that cannot"
+    assert "benchmark_net" not in res.totals
+    assert "excess_net" not in res.totals
+    assert any("needs a universe" in n for n in res.notes)
+
+
 # ------------------------------------------------------------------- the bar
 def test_the_t_stat_is_the_sharpe_over_how_long_it_ran():
     """A good ratio measured over three months is not the same evidence as the

@@ -32,6 +32,7 @@ from typing import Any, NamedTuple
 import pandas as pd
 
 from qanat import progress
+from qanat.context import is_point_in_time, members
 from qanat.models import Project
 from qanat.retention import parse_duration
 from qanat.runner import order, run_all
@@ -354,8 +355,31 @@ def score_period(
     ), notes
 
 
-def benchmark_returns(prices: pd.DataFrame, periods: list[Period],
-                      spec: str) -> list[float] | None:
+#: The two benchmarks qanat computes rather than reads off a symbol. Both hold a
+#: list in equal parts and differ only in which list -- which is the whole point:
+#: one answers "against the market", the other "against the pool this run was
+#: allowed to hold", and a strategy whose only claim is that it picks inside that
+#: pool is answerable to the second one.
+SYNTHETIC_BENCHMARKS = ("equal_weight", "universe_equal_weight")
+
+
+def _held_equally(a: pd.Series, b: pd.Series, only: set[str] | None = None) -> float:
+    """One share of everything priced at both ends of a period.
+
+    A symbol that was not trading across the period is dropped rather than counted
+    as a zero return -- it was not a holding. A period where nothing was priced is
+    flat, which is what holding nothing earns.
+    """
+    if only is not None:
+        cols = [c for c in a.index if c in only]
+        a, b = a[cols], b[cols]
+    r = (b / a - 1.0).dropna()
+    return float(r.mean()) if len(r) else 0.0
+
+
+def benchmark_returns(prices: pd.DataFrame, periods: list[Period], spec: str,
+                      universe: pd.DataFrame | None = None,
+                      symbol_column: str = "symbol") -> list[float] | None:
     """What the benchmark did over each of the same holding periods.
 
     Priced on the strategy's own period boundaries rather than on a calendar, so
@@ -364,10 +388,29 @@ def benchmark_returns(prices: pd.DataFrame, periods: list[Period],
 
     Costs are not charged to it. A benchmark is the thing you could have held by
     doing nothing, and doing nothing does not pay turnover.
+
+    Three things `spec` can be:
+
+      * a symbol in the price table -- hold that one thing.
+      * `equal_weight` -- hold everything the price table carries. The market, as
+        far as this project has one.
+      * `universe_equal_weight` -- hold the run's universe, on each date, in equal
+        parts. `universe` is that universe's file, and membership is read per
+        period from the day the portfolio was decided, so the floor moves as the
+        pool moved.
+
+    The difference between those last two is the difference between two questions,
+    and a rule that narrowed to one sector owes an answer to both. `equal_weight`
+    asks whether the rule beat the market -- which a rule riding a sector that
+    doubled will pass without picking anything well. `universe_equal_weight` asks
+    the harder one: whether any of the work after choosing the pool was worth
+    doing, or whether holding the pool itself would have earned the same.
     """
     if not spec or not periods:
         return None
-    if spec != "equal_weight" and spec not in prices.columns:
+    if spec == "universe_equal_weight" and universe is None:
+        return None
+    if spec not in SYNTHETIC_BENCHMARKS and spec not in prices.columns:
         return None
     out: list[float] = []
     for p in periods:
@@ -378,14 +421,28 @@ def benchmark_returns(prices: pd.DataFrame, periods: list[Period],
             out.append(0.0)
             continue
         if spec == "equal_weight":
-            # One share of everything priced at both ends. A symbol that was not
-            # trading over this period is not a zero return, it is not a holding.
-            r = (b / a - 1.0).dropna()
-            out.append(float(r.mean()) if len(r) else 0.0)
+            out.append(_held_equally(a, b))
+        elif spec == "universe_equal_weight":
+            #  As of the day the portfolio was decided, not the day it was priced.
+            #  The benchmark has to be the pool the step was choosing from, and the
+            #  step was choosing at `as_of`.
+            out.append(_held_equally(a, b, _universe_symbols(universe, p.as_of, symbol_column)))
         else:
             x, y = a.get(spec), b.get(spec)
             out.append(0.0 if (pd.isna(x) or pd.isna(y) or not x) else float(y / x - 1.0))
     return out
+
+
+def _universe_symbols(universe: pd.DataFrame | None, as_of: str,
+                      symbol_column: str = "symbol") -> set[str]:
+    """Who was in the universe on one day, by the name the prices call them."""
+    if universe is None:
+        return set()
+    rows = members(universe, as_of)
+    col = symbol_column if symbol_column in rows.columns else "symbol"
+    if col not in rows.columns:
+        return set()
+    return set(rows[col].astype(str))
 
 
 def t_stat(totals: dict[str, Any]) -> float | None:
@@ -682,7 +739,7 @@ def segment(periods: list[Period], split: str | None,
 
 def score(
     prices: pd.DataFrame, held: dict[str, pd.Series], stops: list[str], project: Project,
-    costs: Costs | None = None,
+    costs: Costs | None = None, universe: pd.DataFrame | None = None,
 ) -> tuple[list[Period], dict[str, Any], list[str]]:
     """Every period at once. The replay itself scores incrementally; this is the
     same arithmetic in one call, for anything holding a finished set of portfolios."""
@@ -699,7 +756,9 @@ def score(
             previous = w if w is not None else pd.Series(dtype=float)
     gap = project.backtest.rebalance if project.backtest else ""
     spec = project.backtest.benchmark if project.backtest else ""
-    return periods, totals_of(periods, gap, benchmark_returns(prices, periods, spec)), notes
+    sym = project.backtest.symbol_column if project.backtest else "symbol"
+    bench = benchmark_returns(prices, periods, spec, universe, sym)
+    return periods, totals_of(periods, gap, bench), notes
 
 
 # --------------------------------------------------------------- several books
@@ -972,6 +1031,7 @@ def _run_backtest(
                          "from": frm, "to": to, "rebalance": every, "seed": seed,
                          "decay": smoothing, "split": cut_at or None,
                          "universe": universe or "(as declared on the step)",
+                         "benchmark": bt.benchmark or None,
                          "fee_bps": costs.fee_bps, "slippage_bps": costs.slippage_bps,
                          "purge": held_for, "embargo": costs.embargo,
                          "jobs_in_run": sorted(needed), "data": fingerprint,
@@ -987,6 +1047,34 @@ def _run_backtest(
                             f"last {smoothing} stops, newest heaviest")
     if universe:
         result.notes.append(f"universe overridden to '{universe}' for this run")
+
+    #  `universe_equal_weight` is the only benchmark that needs to know what the run
+    #  was allowed to hold, so its file is read here -- once, before the replay, for
+    #  the same reason the prices are: every pass rewrites the derived tables from a
+    #  slice of the past, and a benchmark is entitled to the whole history.
+    #
+    #  Which universe is the one the run actually used: the override if there was
+    #  one, otherwise the alphas' own. `_own` already refuses to choose when two
+    #  alphas priced together disagree, and that refusal is right here too -- a book
+    #  spanning two pools has no single pool to be measured against.
+    bench_universe: pd.DataFrame | None = None
+    if bt.benchmark == "universe_equal_weight":
+        bid = universe or _own("universe")
+        holdable = project.universe(bid) if bid else None
+        if holdable is None:
+            result.notes.append(
+                "benchmark `universe_equal_weight` needs a universe and this run has none: "
+                "no `universe:` on the alpha, and none passed to the run. The benchmark "
+                "lines are absent rather than zero"
+            )
+        else:
+            bench_universe = pd.read_csv(root / holdable.symbols)
+            if not is_point_in_time(bench_universe):
+                result.notes.append(
+                    f"universe '{holdable.id}' has no from/to dates, so this benchmark holds "
+                    f"today's list on every past date. It carries the same survivorship bias "
+                    f"the strategy does, which flatters both and the gap between them least"
+                )
     if clockless:
         result.notes.append(
             f"{len(clockless)} table(s) in this lineage have no time column, so the as-of "
@@ -1068,7 +1156,8 @@ def _run_backtest(
                 result.notes.extend(notes)
                 if period is not None:
                     result.periods.append(period)
-                    bench = benchmark_returns(prices, result.periods, bt.benchmark)
+                    bench = benchmark_returns(prices, result.periods, bt.benchmark,
+                                              bench_universe, bt.symbol_column)
                     result.totals = totals_of(result.periods, result.rebalance, bench)
                     result.segments = segment(result.periods, cut_at, bt.live_from,
                                               result.rebalance, bench)

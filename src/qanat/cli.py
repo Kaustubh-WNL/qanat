@@ -456,7 +456,14 @@ def cmd_backtest(args) -> int:
     #  is the difference between a result and a claim.
     if "benchmark_net" in t:
         ex = t["excess_net"]
-        print(f"    {'benchmark':<16} {_money(t['benchmark_net'])}  {D}doing nothing instead{X}")
+        #  Which floor this is matters more than that there is one. Beating the market
+        #  and beating the pool you narrowed to are different achievements, and a line
+        #  that says only `benchmark` lets the easier one be read as the harder one.
+        spec = (res.conditions or {}).get("benchmark") or ""
+        against = {"equal_weight": "everything priced, equally",
+                   "universe_equal_weight": "the universe, equally"}.get(
+                       spec, f"holding {spec} instead" if spec else "doing nothing instead")
+        print(f"    {'benchmark':<16} {_money(t['benchmark_net'])}  {D}{against}{X}")
         print(f"    {c('excess', G if ex > 0 else R_)}           "
               f"{c(_money(ex), G if ex > 0 else R_)}  {D}what the rule added{X}")
     print()
