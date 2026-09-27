@@ -38,22 +38,25 @@ without a new field.
 | --- | --- | --- |
 | who fires it | the cron line | a person |
 | gaps | none, while live | whatever the person leaves |
-| a flat line means | the reading did not change | **nobody looked** |
 
-That last row is the whole cost of the second mode, and it is invisible on a chart. Two readings
-three weeks apart draw the same shape as two readings a day apart, and the shape says "stable" in
-both cases. Only one of them measured anything.
+Gaps need no separate accounting, because **a dot is drawn where a reading exists and nowhere
+else**. Three weeks of silence is three weeks of empty chart, so a stretch nobody watched cannot be
+mistaken for a stretch that held steady. The two modes differ in how evenly the dots fall, not in
+how honestly they read.
 
-So a reading carries the window it read, not just its article count:
+Every dot opens. Click one and it shows that reading: the agent's text, the three probabilities, and
+the reason it gave for each. That is what the append-only rule is for — nothing is ever overwritten,
+so every point on the chart is still answerable months later, and a person can ask *what did this
+look like at the time* without taking anybody's word for it.
 
-```
-covers_from · covers_to · n_articles
-```
+Dots that produced a checkpoint are marked differently from dots that did not. The chart then shows
+two things at once: what was believed, and where a belief turned into a position.
 
-`340 articles across 21 days` and `12 articles across 1 day` are different claims, and the second
-one being flat is evidence while the first one being flat is mostly arithmetic. The chart draws
-observed readings as points and does not interpolate between two it did not watch — a dashed run
-between distant readings, not a confident line.
+What a reading does carry beyond its numbers is `n_articles`, which is about strength rather than
+timing — three articles and three hundred produce dots of identical height. And `covers_from` /
+`covers_to`, for the one case the dots cannot show: an ingest that could not reach all the way back
+to the previous reading. A gap the API refused to answer for leaves a hole *inside* a dot, which is
+the only thing here that hides.
 
 **Prices can be backfilled; news cannot.** This is the asymmetry that decides how much manual mode
 costs. A person who skips three weeks of price history loses nothing: the prices are still there
