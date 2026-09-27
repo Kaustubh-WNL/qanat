@@ -1,8 +1,9 @@
 # The narrative page
 
 **This is a design, not a description.** Nothing here is built yet. Each section says what
-existing machinery it reuses, because most of it is reuse — the parts that need writing are the
-tables, the ingestion, and one weighting step.
+existing machinery it reuses, because most of it is reuse — what actually has to be written is the
+page itself, the ingestion, and three steps: `valuation`, `exposure` and the one that picks the
+weights.
 
 The narrative page is where a hypothesis comes from. It is deliberately **outside the alpha
 pipeline**: no narrative table feeds a weights table, and no alpha reads a probability. News here
@@ -204,46 +205,184 @@ computed fresh.
 Which is the opposite of the news side, and worth holding both in mind at once: forward price
 evidence survives being ignored, and forward news does not.
 
-## The probabilities are the allocation
+## A stance is several industries, not a list of names
 
-One alpha per stance — each stance implies its own universe and its own tilt — and the three priced
-together as one book, split by the probabilities:
+"Tech keeps spending on AI" reaches semiconductors, utilities, data-centre REITs, cooling and
+networking -- and cuts the other way for the hyperscalers writing the cheques. One stance, six
+industries, and one of them with the opposite sign.
 
-```python
-run_backtest(alpha=["ai_capex_yes", "ai_capex_same", "ai_capex_no"],
-             allocation={"ai_capex_yes": 55, "ai_capex_same": 30, "ai_capex_no": 15})
+That matters because each industry is valued differently. Semis on earnings or revenue, utilities on
+yield, REITs on rental income. So a margin of safety computed in one is not comparable with a margin
+of safety computed in another, and a single ranked list across the stance would be comparing
+measuring sticks. Worse, the loosest method wins it: looser assumptions produce larger discounts, so
+the industry whose fair value rests on the shakiest estimate looks like it holds all the bargains.
+
+This is not an edge case to handle later. Every stance has it.
+
+So a **book** -- one stance's portfolio -- is built in two levels:
+
+| level | decided by |
+| --- | --- |
+| how much of the book each industry gets | the `exposure` table: semis react harder than utilities, so semis get more |
+| which names inside an industry | margin of safety, ranked **within that industry only** |
+
+A stance still has exactly one universe file. It carries a `sector` column, which `qanat init`
+already ships, so the book step groups by it and never has to rank across groups:
+
+```
+symbol,name,sector,from,to
+NVDA,Nvidia,SEMI,,
+VST,Vistra,UTIL,,
+EQIX,Equinix,REIT,,
 ```
 
-`_shares` normalises whatever it is given, so the percentages go in raw with no conversion. The
-result is one `alphaset` with one PnL table, and the split lands in the run's `conditions` and in
-its digest — so a run permanently records which probabilities produced it, and changing them is a
-different question rather than the same one re-answered.
+One universe, one step, one script per stance -- not a step per industry.
 
-Nothing has to be built for this. It is the multi-alpha book that already exists.
+A name may sit in two stances' universes; a utility can belong to both `keeps spending` and
+`unchanged`. It is valued identically in both, because the method is keyed on its sector and never
+on the stance. That is what keeps a comparison between two stances a comparison of theses rather
+than of two different valuation models.
 
-## Blending averages the portfolio; it does not make it survive
+## The probabilities score a portfolio; they are not the weights
 
-Read `combine`: when two alphas hold opposite sides of a name they net off, **and the money that
-frees up is spread over what is left**. So a hedge held by the negative stance against a long held
-by the positive stance is cancelled, and the proceeds are reinvested into the long.
+There is one vector summing to 100 and it is the reading's. It is used in exactly one place: to
+weight the stances when a candidate portfolio is being scored.
 
-Probability-blending gives the *expected* portfolio. Surviving whichever future arrives is a
-different requirement, and the blend is actively hostile to it.
+```
+score(w) = p_yes · R_yes(w)  +  p_same · R_same(w)  +  p_no · R_no(w)
+```
 
-Two steps, in this order:
+where `R_s(w)` is what the portfolio returns if stance `s` arrives, read off the `exposure` table.
 
-1. **Blend by probability.** Free today.
-2. **Clear the floor.** A step that reads the combined book, prices it under each stance using the
-   exposure table, and adjusts until the worst stance is above a stated limit.
+Splitting the money across the three books in the proportions 55/30/15 is *a candidate* -- the one
+you get by ignoring the floor -- and not the answer. Calling it the allocation was the mistake an
+earlier draft of this file made, and it invents a second three-number vector that reads like a second
+set of probabilities. There is no second vector. There is one belief, and a portfolio that gets
+scored against it.
 
-Two steps rather than one optimiser, deliberately. Every intermediate table stays open: the three
-stance portfolios, the blend, and the adjustment that put the hedge back. One solver would return a
-weight vector and no account of itself, which is the opposite of what this project is for.
+Worked, with $1,000 and three books of two names each:
 
-The exposure table — how each asset fares under each stance — is the largest piece of work in the
-plan and the place it can most easily become fiction. Weights computed from numbers the agent
-asserted look identical to weights computed from sensitivities measured against history. Measure
-them.
+```
+book_yes    NVDA 50 · VST 50        book_same   KO 60 · PG 40        book_no   GLD 70 · TLT 30
+```
+
+| candidate | split | if yes | if same | if no | score |
+| --- | --- | --- | --- | --- | --- |
+| the probabilities | 550 / 300 / 150 | +12.6% | +1.5% | **-12.4%** | +5.5% |
+| | 500 / 250 / 250 | +11.0% | +1.3% | -10.3% | +4.9% |
+| **chosen** | **480 / 270 / 250** | +10.5% | +1.4% | **-9.7%** | **+4.7%** |
+| | 450 / 300 / 250 | +9.7% | +1.4% | -8.7% | +4.4% |
+
+With a floor of -10%, the first two are infeasible however well they score. NVDA's weight in the
+chosen candidate is `480/1000 × 0.50 = 0.24`, which is all the arithmetic there is: a share of the
+money, times a share of the book.
+
+The search is over portfolios, not over beliefs. The split across books is a parameterisation of the
+portfolio and an internal detail of the step -- what the user is shown is the belief, the resulting
+weights, and what the floor cost:
+
+```
+    you believe    55 / 30 / 15
+    average         +5.5%  ->  +4.7%      the floor cost 0.8%
+    worst case     -12.4%  -> -9.7%       and bought 2.7%
+```
+
+## Why the search is a grid, and why it is not `combine`
+
+Restricting candidates to mixes of three books leaves a two-dimensional space. At 1% steps that is
+about 5,000 candidates, each three dot products -- exhaustive with numpy, no new dependency, and
+**deterministic**, which the replay rules require of anything that has to reproduce.
+
+Exhaustive also means the infeasible cases are honest. If no candidate clears the floor, the answer
+is *no combination of these three books survives your limit* -- which says the negative-stance book
+is not hedging anything. A solver would have returned the least-bad vector and said nothing.
+
+The limit is real and worth stating: a mix of three books cannot invent a position none of them
+holds. That is the right constraint. A holding that appears in no stance's thesis would have no
+account of itself.
+
+`combine` cannot do this job, and not only because it ignores the floor. When two alphas hold
+opposite sides of a name it nets them off **and spreads the freed money over what is left** -- so a
+hedge in the negative book, held against a long in the positive book, is cancelled and reinvested
+into the long. It is the one function in the engine actively hostile to surviving a scenario. So the
+blend happens in a step, over `features` tables, and only the finished books reach the weights
+stage.
+
+## The two alphas, and the three questions they answer
+
+```
+features.book_yes ┐
+features.book_same├─► weights.blend    probabilities as the split, no floor
+features.book_no  ┘
+                  └─► weights.target   the candidate that clears the floor
+```
+
+Both read the same features, which is what makes them comparable -- the condition the `alphas`
+docstring already sets for two alphas in one project. Three commands, and each answers one question:
+
+| | asks |
+| --- | --- |
+| `--alpha target` | the strategy |
+| `--alpha blend` | what the floor cost |
+| `--alpha target --universe u_base` | whether the narrative was worth anything |
+
+And with `benchmark: universe_equal_weight` each of those also reports whether ranking by margin of
+safety beat holding the stance's universe outright. See [attribution.md](attribution.md).
+
+## Where the judgement enters, and where it does not
+
+The agent's whole reading of the world is about fifteen rows, and a person can disagree with all of
+them in ten seconds:
+
+| stance | industry | direction |
+| --- | --- | --- |
+| keeps spending | semis | strong + |
+| keeps spending | utilities | + |
+| keeps spending | hyperscalers | - |
+| unchanged | staples | small + |
+| breaks | gold | + |
+| breaks | semis | strong - |
+
+Everything downstream of that is measured. `betas` come from regressing asset returns on driver
+series over history; `exposure` is those betas against the stance's driver moves; `valuation` is a
+per-sector method over reported fundamentals. An asset whose betas carry t-stats near zero has no
+measured exposure to the drivers at all, and putting it in a stance portfolio is pretence -- the
+step reports it rather than ranking it.
+
+This is the line the whole design turns on. Fifteen numbers a person can argue with, and five
+hundred that were measured. An agent that asserts the five hundred produces weights that look
+identical and mean nothing.
+
+## Which page each step belongs to
+
+**Narrative page.** The question, the schedule, the readings, the chart, and the checkpoint. It
+produces three probabilities and nothing else the pipeline can see. No step reads a table from here.
+
+**Build page.** Everything the agent proposes, in the order a person should review it:
+
+| | new? |
+| --- | --- |
+| the drivers, and which way each moves per stance | the fifteen rows above |
+| the sources those drivers need -- cost, key, **and how far back they go** | approval |
+| three universes, dated, each with a `sector` column | |
+| `valuation` -- fair value and margin of safety, method by sector | new, built once, reused by every narrative |
+| `betas`, then `exposure` | new |
+| three books -- industry split by exposure, names by margin of safety | one script, three universes |
+| `blend`, then `target` | new |
+
+It ends on the screen the original plan called screening: the ranked names with their weights, and
+the belief-against-holding line above them.
+
+**Backtest page.** The replay, the three comparisons, and the label that matters -- *in sample*,
+because the reading was written by an agent that had read news about these years. What it is good
+for is higher fees, empty periods and the drawdown path. Then `live: true`, and the number that
+counts starts from the checkpoint date.
+
+**Back to the narrative page.** That reading's dot is now marked as one that became a position, and
+carries what the strategy has earned since.
+
+Most of the second and third pages is the console that already exists. What is actually new is the
+first page, and three steps.
 
 ## Pinned, or floating
 
@@ -282,7 +421,7 @@ Abandoned narratives leave tables nothing reads. `qanat plan` already has the wo
 
 ## The words
 
-Five, and each means one thing.
+Nine, and each means one thing.
 
 | Word | What it is |
 | --- | --- |
@@ -291,6 +430,10 @@ Five, and each means one thing.
 | **reading** | Where a narrative stands at one moment: the agent's text, a probability with a reason for each stance, and the window of news it read. Appended, never replaced. The three sum to 100. |
 | **checkpoint** | A reading and the run it produced. What ties a strategy back to what was believed when it was built, and the frontier for everything that run is measured on. |
 | **resolution** | The rule that decides whether the positive or negative future happened. Written once, at creation. What makes a reading scoreable. |
+| **driver** | An observable series a stance moves: semiconductor billings, power demand, reported margins. Ingested like any other source. What the agent chooses; not what it estimates. |
+| **exposure** | What an asset returns if a stance arrives. Betas measured against drivers over history, applied to the stance's driver moves. Used twice: the industry split inside a book, and the floor check at the end. |
+| **book** | One stance's portfolio. Industries weighted by exposure, names inside an industry ranked by margin of safety. Three books to a reading, in `features` -- only the finished portfolios reach the weights stage. |
+| **floor** | The worst a portfolio may return under any stance. A candidate that breaks it is infeasible however well it scores. |
 
 `topic` and `deck` are gone: a narrative is the container, and one word is enough. `snapshot` is not
 used here — `plan.snapshot()` already holds it for the job-spec state.
