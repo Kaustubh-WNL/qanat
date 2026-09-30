@@ -1,0 +1,45 @@
+#!/bin/sh
+# Refuse a commit whose author email is not the one this machine is configured
+# to use for this repository.
+#
+# Git writes an author email into every commit, and GitHub decides who a commit
+# belongs to by reading that email rather than by who pushed it. So an overridden
+# email silently hands your commits to whichever account has that address
+# verified. Undoing that means rewriting history, and on a repository with forks
+# even that does not fully work: the old commits stay reachable by their SHA.
+#
+# The rule is "the commit's email must match your own config", not "must be a
+# particular address". Everyone's config holds their own identity, so this
+# refuses an override and never refuses a contributor.
+#
+# The wanted value is read from the config *files* with --local / --global. A
+# plain `git config user.email` would not do: `git -c user.email=...` propagates
+# into hooks, so the override would be compared against itself and always pass.
+
+want=$(git config --local user.email 2>/dev/null)
+[ -n "$want" ] || want=$(git config --global user.email 2>/dev/null)
+# No identity configured anywhere: git refuses the commit itself, with a better
+# message than this one.
+[ -n "$want" ] || exit 0
+
+have=$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\([^>]*\)>.*/\1/p')
+[ "$have" = "$want" ] && exit 0
+
+cat >&2 <<MSG
+commit refused: the author email is not the one you are configured to use.
+
+    your config   $want
+    this commit   $have
+
+GitHub attributes a commit by the email inside it, not by who pushed it, so
+committing under another address gives those commits to whatever account has
+that address verified. On a repository with forks that is very hard to undo.
+
+Drop the -c user.email / --author override and commit again, or change your
+setting on purpose:
+
+    git config user.email "$have"
+
+To author as someone else deliberately, pass --no-verify.
+MSG
+exit 1
