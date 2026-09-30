@@ -202,8 +202,10 @@ Four connectors: `rest` for an HTTP endpoint, `sql` for anything SQLAlchemy reac
 path or a URL, and `synthetic` for a fake market that runs before you have any key. The store is a
 DuckDB file, or Postgres on localhost.
 
-Four examples. `examples/fx-bundled` is real data in the repo: 27 years of ECB rates, 126 KB, no
-key needed.
+Five examples. `examples/fx-bundled` is real data in the repo: 27 years of ECB rates, 126 KB, no
+key needed. `examples/filings-sample` is the other kind of data and it is invented: a quarterly
+filings panel where a row has two dates, the quarter it describes and the day it was published.
+Its README is about which of the two is the clock, and what a replay reads when nobody says.
 
 ## Status
 

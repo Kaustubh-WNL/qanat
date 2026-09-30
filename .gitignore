@@ -11,10 +11,14 @@ build/
 data/
 *.duckdb
 *.duckdb.wal
-# `data/` above keeps generated stores out. The one dataset qanat ships is not
-# generated, and a clone without it cannot run examples/fx-bundled at all.
+# `data/` above keeps generated stores out. The datasets qanat ships are not
+# generated on the fly, and a clone without them cannot run the examples at all.
+# The `.duckdb` rules above still apply inside these directories, so a store built
+# by `qanat run` stays untracked.
 !examples/fx-bundled/data/
 !examples/fx-bundled/data/*.csv.gz
+!examples/filings-sample/data/
+!examples/filings-sample/data/*.csv.gz
 .env
 
 # Local IDE / agent config (machine-specific)
