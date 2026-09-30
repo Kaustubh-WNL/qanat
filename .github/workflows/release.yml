@@ -138,7 +138,20 @@ jobs:
             "$version" >> notes.md
           echo "wrote $(wc -l < notes.md) lines of notes"
 
+      # Create it, or update it if it is already there. A tag can be pushed twice:
+      # re-cut after a history rewrite, or moved to fix a bad commit. The first
+      # time that happened this step failed with "Release.tag_name already
+      # exists" after the build and the upload had both gone through, which is a
+      # red run on a release that was actually fine.
       - name: publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --latest --notes-file notes.md
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME exists, updating its notes"
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --latest \
+              --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --latest \
+              --notes-file notes.md
+          fi
