@@ -35,9 +35,11 @@ RUNS = "_qanat_runs"
 EVENTS = "_qanat_events"
 STATE = "_qanat_state"
 BACKTESTS = "_qanat_backtests"
+SESSIONS = "_qanat_sessions"
+ASKS = "_qanat_asks"
 BT_WEIGHTS = "_qanat_bt_weights"
 BT_PERIODS = "_qanat_bt_periods"
-META = (RUNS, EVENTS, STATE, BACKTESTS, BT_WEIGHTS, BT_PERIODS)
+META = (RUNS, EVENTS, STATE, BACKTESTS, BT_WEIGHTS, BT_PERIODS, SESSIONS, ASKS)
 
 #: Schema holding the as-of views a replay reads through. Named, not `asof`,
 #: because DuckDB reserves that word for ASOF JOIN.
@@ -218,12 +220,11 @@ class Store:
                     raise
                 raise StoreBusy(
                     f"{self.path} is already open in another process.\n"
-                    "  A DuckDB file takes one writer at a time, so the console, the CLI and an\n"
-                    "  agent cannot each open it. Pick one door:\n"
+                    "  A DuckDB file takes one writer at a time, so the CLI, the scheduler and\n"
+                    "  an agent cannot each open it. Pick one:\n"
                     "    · stop `qanat serve`, then run this again, or\n"
-                    "    · keep the console and drive it from there, or\n"
-                    "    · start `qanat mcp` first and ask the agent to open_console. One process\n"
-                    "      serves both, or\n"
+                    "    · reach it through the process that already has it: `qanat mcp --http`\n"
+                    "      serves MCP from one that holds the store, or\n"
                     "    · move the project to Postgres (`qanat init --postgres`), which takes many"
                 ) from exc
         # Without this the meaning of a timestamp depends on the machine: a stamp
@@ -347,6 +348,70 @@ class Store:
             self.con.execute(
                 f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS live BOOLEAN"
             )
+            self.con.execute(f"""
+                CREATE TABLE IF NOT EXISTS {SESSIONS} (
+                    session_id  VARCHAR PRIMARY KEY,
+                    started_at  TIMESTAMP,
+                    ended_at    TIMESTAMP,
+                    title       VARCHAR,
+                    summary     VARCHAR,
+                    cli         VARCHAR,
+                    model       VARCHAR,
+                    asks        BIGINT,
+                    cost_usd    DOUBLE
+                )""")
+            #  The conversation itself. The CLI keeps its own transcript and that
+            #  is what `--resume` reads; this is ours, and it is what the console
+            #  can show. Without it a past session is a card -- a summary and a
+            #  count -- and nobody can see what was actually said.
+            #
+            #  `lines` is the tool log as JSON: what the agent did between the
+            #  question and the answer, which is most of what makes a thread worth
+            #  re-reading.
+            self.con.execute(f"""
+                CREATE TABLE IF NOT EXISTS {ASKS} (
+                    ask_id      BIGINT PRIMARY KEY,
+                    session_id  VARCHAR,
+                    asked_at    TIMESTAMP,
+                    question    VARCHAR,
+                    answer      VARCHAR,
+                    error       VARCHAR,
+                    lines       VARCHAR,
+                    model       VARCHAR,
+                    cost_usd    DOUBLE,
+                    elapsed     DOUBLE
+                )""")
+            #  Which conversation a replay came out of. The run already records
+            #  what was asked of the engine; this records who asked and why, and
+            #  it is the join that lets a session show what it produced and an
+            #  alpha show the sessions it came from.
+            #
+            #  Nullable on purpose: a replay from the CLI or the scheduler belongs
+            #  to no conversation, and pretending otherwise would invent a session
+            #  nobody had.
+            self.con.execute(
+                f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS session_id VARCHAR"
+            )
+            #  ---- the ledger ------------------------------------------------
+            #  A run already records what was computed. These record what it was
+            #  an attempt at, which is the part that makes a number judgeable.
+            #
+            #  `hypothesis` is why this was worth trying. `parent_run_id` is what
+            #  it was a variation of, so a sweep reads as a sweep rather than as
+            #  eight unrelated runs. `disposition` is what was decided about it --
+            #  and recording a refutation is the whole point: the losers are the
+            #  count, and a ledger that keeps only the winners cannot be divided by
+            #  anything.
+            #
+            #  `seal` is the date the searcher was clipped to when this ran, and
+            #  `proposed_by` is which model suggested it -- two runs proposed by
+            #  different models are not the same trial.
+            for col, kind in (("hypothesis", "VARCHAR"), ("parent_run_id", "BIGINT"),
+                              ("disposition", "VARCHAR"), ("seal", "VARCHAR"),
+                              ("proposed_by", "VARCHAR")):
+                self.con.execute(
+                    f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS {col} {kind}"
+                )
             self.con.execute(f"""
                 CREATE TABLE IF NOT EXISTS {STATE} (
                     job_id     VARCHAR PRIMARY KEY,
@@ -853,15 +918,15 @@ class Store:
 
     def start_backtest(
         self, frm: str, to: str, rebalance: str, seed: int, digest: str, alpha: str = "",
-        live: bool = False,
+        live: bool = False, session_id: str = "",
     ) -> int:
         run_id = time.time_ns() // 1000
         with self._lock:
             self.con.execute(
                 f"INSERT INTO {BACKTESTS} (run_id, created_at, from_date, to_date, rebalance, "
-                "seed, digest, status, periods, alpha, live) "
-                "VALUES (?, now()::TIMESTAMP, ?, ?, ?, ?, ?, 'running', 0, ?, ?)",
-                [run_id, frm, to, rebalance, seed, digest, alpha, live],
+                "seed, digest, status, periods, alpha, live, session_id) "
+                "VALUES (?, now()::TIMESTAMP, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)",
+                [run_id, frm, to, rebalance, seed, digest, alpha, live, session_id or None],
             )
         return run_id
 
@@ -913,13 +978,228 @@ class Store:
         ).df()
         return _records(df)
 
+    # ---- sessions ------------------------------------------------------------
+    #  A conversation, and what came of it. The console used to hold exactly one
+    #  question in memory and drop it when the next arrived, so asking twice was
+    #  two strangers and nothing an agent worked out survived the answer.
+    #
+    #  The id is minted here rather than read back from the CLI, and handed to it
+    #  as `--session-id`. One id then names the same thing on both sides: no
+    #  mapping table, no race, and a row that exists before the process starts --
+    #  so a crash still leaves something resumable behind.
+    def open_session(self, session_id: str, cli: str = "", title: str = "") -> None:
+        """Record a conversation starting. Safe to call again for one already open."""
+        with self._lock:
+            row = self.con.execute(
+                f"SELECT 1 FROM {SESSIONS} WHERE session_id = ?", [session_id]
+            ).fetchone()
+            if row:
+                return
+            self.con.execute(
+                f"INSERT INTO {SESSIONS} (session_id, started_at, title, cli, asks, cost_usd) "
+                "VALUES (?, now()::TIMESTAMP, ?, ?, 0, 0.0)",
+                [session_id, title or None, cli or None],
+            )
+
+    def note_ask(self, session_id: str, cost_usd: float = 0.0, model: str = "",
+                 title: str = "") -> None:
+        """One more question answered in this session, and what it cost.
+
+        The title is the first question asked, kept as a stand-in until a summary
+        exists -- a list of timestamps is not a history anybody reads.
+        """
+        with self._lock:
+            self.con.execute(
+                f"UPDATE {SESSIONS} SET asks = coalesce(asks, 0) + 1, "
+                "cost_usd = coalesce(cost_usd, 0.0) + ?, "
+                "model = coalesce(?, model), title = coalesce(title, ?) "
+                "WHERE session_id = ?",
+                [float(cost_usd or 0.0), model or None, title or None, session_id],
+            )
+
+    def end_session(self, session_id: str, summary: str = "") -> None:
+        with self._lock:
+            self.con.execute(
+                f"UPDATE {SESSIONS} SET ended_at = now()::TIMESTAMP, "
+                "summary = coalesce(?, summary) WHERE session_id = ?",
+                [summary or None, session_id],
+            )
+
+    def save_ask(self, session_id: str, state: dict[str, Any]) -> int:
+        """One question and everything that came of it, kept so it can be re-read.
+
+        Written when the ask finishes, from the same `state()` the console was
+        drawing live -- so the replay shows what the person saw, not a
+        reconstruction of it.
+        """
+        import json as _json
+
+        ask_id = time.time_ns() // 1000
+        with self._lock:
+            self.con.execute(
+                f"INSERT INTO {ASKS} (ask_id, session_id, asked_at, question, answer, "
+                "error, lines, model, cost_usd, elapsed) "
+                "VALUES (?, ?, now()::TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)",
+                [ask_id, session_id, state.get("question") or "",
+                 state.get("answer") or "", state.get("error") or "",
+                 _json.dumps(state.get("lines") or []), state.get("model") or "",
+                 float(state.get("cost_usd") or 0.0), float(state.get("elapsed") or 0.0)],
+            )
+        return ask_id
+
+    def session_asks(self, session_id: str) -> list[dict[str, Any]]:
+        """Everything said in one conversation, oldest first -- reading order."""
+        import json as _json
+
+        df = self.rcon.execute(
+            f"SELECT * FROM {ASKS} WHERE session_id = ? ORDER BY asked_at", [session_id]
+        ).df()
+        rows = _records(df)
+        for r in rows:
+            try:
+                r["lines"] = _json.loads(r.get("lines") or "[]")
+            except ValueError:
+                r["lines"] = []
+        return rows
+
+    def session(self, session_id: str) -> dict[str, Any] | None:
+        df = self.rcon.execute(
+            f"SELECT * FROM {SESSIONS} WHERE session_id = ?", [session_id]
+        ).df()
+        rows = _records(df)
+        return rows[0] if rows else None
+
+    def sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Every conversation, newest first, with what each one produced.
+
+        `runs` counts the replays that came out of it, and is legitimately zero:
+        plenty of sessions are a question and an answer. An empty count is the
+        truth about that session, not a gap in the record.
+        """
+        df = self.rcon.execute(f"""
+            SELECT s.*,
+                   count(b.run_id)               AS runs,
+                   max(b.created_at)             AS last_run_at
+            FROM {SESSIONS} s
+            LEFT JOIN {BACKTESTS} b ON b.session_id = s.session_id
+            GROUP BY ALL
+            ORDER BY s.started_at DESC
+            LIMIT {int(limit)}
+        """).df()
+        return _records(df)
+
+    def session_backtests(self, session_id: str) -> list[dict[str, Any]]:
+        """What this conversation replayed, newest first."""
+        df = self.rcon.execute(f"""
+            SELECT run_id, created_at, from_date, to_date, rebalance, digest, status,
+                   periods, net, turnover, alpha, live
+            FROM {BACKTESTS} WHERE session_id = ? ORDER BY created_at DESC
+        """, [session_id]).df()
+        return _records(df)
+
+    def alpha_sessions(self, alpha: str) -> list[dict[str, Any]]:
+        """Every conversation that replayed this alpha, and what it got.
+
+        The other direction of the same join: from a strategy back to the rooms it
+        was worked out in.
+        """
+        df = self.rcon.execute(f"""
+            SELECT s.session_id, s.started_at, s.title, s.summary,
+                   count(b.run_id)   AS runs,
+                   max(b.created_at) AS last_run_at,
+                   arg_max(b.net, b.created_at)    AS last_net,
+                   arg_max(b.run_id, b.created_at) AS last_run_id
+            FROM {BACKTESTS} b
+            JOIN {SESSIONS} s ON s.session_id = b.session_id
+            WHERE b.alpha = ?
+            GROUP BY ALL
+            ORDER BY max(b.created_at) DESC
+        """, [alpha]).df()
+        return _records(df)
+
     def backtests(self, limit: int = 50) -> list[dict[str, Any]]:
         df = self.rcon.execute(
                 f"SELECT run_id, created_at, from_date, to_date, rebalance, seed, digest, "
-                f"status, periods, gross, fees, slippage, net, turnover, error, alpha, live "
-                f"FROM {BACKTESTS} ORDER BY created_at DESC LIMIT {int(limit)}"
+                f"status, periods, gross, fees, slippage, net, turnover, error, alpha, live, "
+                f"session_id FROM {BACKTESTS} ORDER BY created_at DESC LIMIT {int(limit)}"
         ).df()
         return _records(df)
+
+    def bar_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Every time the bar moved, and who moved it.
+
+        Read off the event log rather than kept separately, because that is where
+        `actor` already lives -- so a change made by an agent mid-answer is
+        attributable without the agent having to remember to say so.
+        """
+        df = self.rcon.execute(f"""
+            SELECT ts, level, message, actor FROM {EVENTS}
+            WHERE job_id = 'bar' ORDER BY ts DESC LIMIT {int(limit)}
+        """).df()
+        return _records(df)
+
+    # ---- the ledger ----------------------------------------------------------
+    def annotate_trial(self, run_id: int, hypothesis: str = "", parent_run_id: int = 0,
+                       disposition: str = "", seal: str = "",
+                       proposed_by: str = "") -> None:
+        """Say what a run was an attempt at. Only what is given is written.
+
+        Separate from `end_backtest` because the two are known at different
+        moments: the numbers when the replay ends, the intent when somebody --
+        or something -- decides what it meant.
+        """
+        sets, args = [], []
+        for col, val in (("hypothesis", hypothesis), ("disposition", disposition),
+                         ("seal", seal), ("proposed_by", proposed_by)):
+            if val:
+                sets.append(f"{col} = ?")
+                args.append(val)
+        if parent_run_id:
+            sets.append("parent_run_id = ?")
+            args.append(int(parent_run_id))
+        if not sets:
+            return
+        args.append(run_id)
+        with self._lock:
+            self.con.execute(
+                f"UPDATE {BACKTESTS} SET {', '.join(sets)} WHERE run_id = ?", args
+            )
+
+    def trials(self, alpha: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        """The ledger, newest first: every attempt, whatever came of it."""
+        where, args = "WHERE status = 'ok'", []
+        if alpha:
+            where += " AND alpha = ?"
+            args.append(alpha)
+        df = self.rcon.execute(f"""
+            SELECT run_id, created_at, alpha, digest, from_date, to_date, rebalance,
+                   seed, net, turnover, periods, session_id,
+                   hypothesis, parent_run_id, disposition, seal, proposed_by
+            FROM {BACKTESTS} {where}
+            ORDER BY created_at DESC LIMIT {int(limit)}
+        """, args).df()
+        return _records(df)
+
+    def trial_count(self, alpha: str = "") -> int:
+        """How many distinct questions were asked before you read the answer.
+
+        Distinct **digests**, not runs. Re-running the same configuration is the
+        same question asked twice and gives the same answer, so it is one trial;
+        changing the lookback, the window, the universe or the split is a new one.
+        The digest already draws that line, which is why it is the key here.
+
+        `alpha` scopes it, and the scope is a judgement rather than a property of
+        the data: the number that matters is the size of the set the winner was
+        chosen from. Picking the best lookback for one rule counts that rule's
+        trials; picking the best of six rules counts all six.
+        """
+        sql = f"SELECT count(DISTINCT digest) FROM {BACKTESTS} WHERE status = 'ok'"
+        args: list[Any] = []
+        if alpha:
+            sql += " AND alpha = ?"
+            args.append(alpha)
+        row = self.rcon.execute(sql, args).fetchone()
+        return int(row[0]) if row else 0
 
     def alpha_book(self) -> list[dict[str, Any]]:
         """Every alpha this project has ever backtested, newest run first.

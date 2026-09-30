@@ -1,5 +1,102 @@
 # Changelog
 
+## 0.3.0 — 2026-09-30
+
+### Qanat is an MCP server for quant factor processing and backtesting
+
+Point it at any source that carries a timestamp. It processes that into factors, stores
+them, replays the whole chain over history one date at a time with no lookahead, prices
+what the portfolio held after fees and slippage, and serves all of it to your agent over
+MCP.
+
+That is what Qanat has always done. This is the release where the package says it and
+says nothing else.
+
+```bash
+claude mcp add qanat -- qanat mcp --scope research
+```
+
+31 tools. Ask "what feeds the momentum strategy", "test this over 2015 to 2024 and tell
+me what survived costs", "why did it lose money in March". Your agent reads the tables,
+runs the replay, opens the period, and shows what was held.
+
+### Three scopes, and each one is a promise
+
+`--read-only` split the tools 23 and 10. That describes how the code is written and
+promises nothing anybody could build against. It is replaced by three nested scopes:
+
+    qanat mcp --scope data        6 tools   read the tables, including as-of
+    qanat mcp --scope research   19 tools   adds replays, results, comparisons
+    qanat mcp                    31 tools   adds authoring, ingest, scheduling
+
+`data` is the door an institution connects at. `research` is the door a hosted service
+connects at. Each is a published contract, so adding a tool to `data` changes what
+somebody has already built against.
+
+`scope` has no default on the tool decorator, so a tool cannot be added without naming
+who may see it. And the split does real work: `set_bar` sits in `full` while
+`record_trial` sits in `research`, so a caller can write down what it tried and cannot
+lower the line those attempts are held to. A tool above your scope names its scope
+instead of pretending not to exist.
+
+### It no longer has to be on your machine
+
+```bash
+qanat mcp --http --port 8421 --scope research --token "$QANAT_MCP_TOKEN"
+qanat serve     --port 8421 --scope research --token "$QANAT_MCP_TOKEN"   # and the scheduler
+```
+
+MCP's Streamable HTTP transport on `/mcp`, with sessions. The scope is fixed by the
+command that starts the server, so nothing in a request can widen it. It binds to
+127.0.0.1 and refuses any other address without a token.
+
+`qanat serve` is that server with a clock: it opens the store, runs the scheduler, and
+mounts the same endpoint, so one process holds the store and everything reaches the
+project through it.
+
+One process serves one project, because the store takes one writer. Two projects means
+two processes, and many tenants means Postgres and a store each.
+
+### What you install is the engine and the server
+
+The console is gone, and so is the terminal app and the HTTP API behind them. Your agent
+client is the screen.
+
+That is about 14,000 lines out of the package, and it is the point rather than the cost.
+A person who opened this repo used to see a chat window and a dashboard and decide what
+Qanat was before reading a word. The answer to "agent? tool? engine?" was the code, not
+the README. What installs now is the replay engine, the CLI that operates it, and the MCP
+server, and nothing you have to look at.
+
+`agent.py` is `headless.py`, because the filename was making the claim.
+
+### The unattended pass got narrower and better fenced
+
+It tries to break your best strategy overnight and records every attempt, and it used to
+do that through a dozen curl endpoints with `--allowedTools Bash`. That is a wide door.
+Asked once to reshape some ideas, the agent walked out of the project into Qanat's own
+installed source and then into `~/.claude/projects`.
+
+It now reaches the project over MCP at `--scope research`, with the tools that scope
+offers and nothing besides. The scope is also what stops it editing the strategy it is
+supposed to be attacking. That used to be a sentence in a prompt.
+
+### Negative costs are refused everywhere, not in one place
+
+A negative fee pays you to trade, so turnover becomes profit and the run lands in the
+strategy book looking like a discovery: -9999 bps once put +1938% into it with nothing
+marking it. That was refused by a `ge=0` on the console's request model, which meant it
+held for exactly one caller. It is in the engine now.
+
+### Upgrading
+
+`--read-only` is gone: use `--scope data` to read tables, or `--scope research` to add
+replays. `qanat serve` no longer opens a console and no longer serves `/api/*`; it serves
+`/mcp`. `qanat tui` is gone. Everything else on the CLI is unchanged.
+
+180 tests, and the release check that used to verify the wheel carried console assets now
+verifies it carries none.
+
 ## 0.2.0 — 2026-09-21
 
 ### The conversation is the console

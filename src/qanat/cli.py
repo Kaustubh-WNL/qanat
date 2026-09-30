@@ -3,22 +3,23 @@
     qanat init [dir]     scaffold a project that runs green with no keys
     qanat check          hold the pipeline against the stage contract
     qanat ls             stages, tables, jobs
-    qanat graph          the console's picture of the pipeline, in the terminal
-    qanat tui            the console itself, in the terminal: graph, alphas, replays
+    qanat graph          the pipeline as a picture, in the terminal
     qanat run [job]      one pass, or one job
     qanat backtest       replay the graph over a window, and price what it held
     qanat report <id>    one backtest, period by period
-    qanat mcp            serve the same tools to an agent over stdio
-    qanat serve          scheduler + console
+    qanat mcp            serve the same tools to an agent, over stdio or --http, at one of three scopes
+    qanat serve          run the scheduler, and serve this project over MCP
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from qanat import __version__
+from qanat.mcp import SCOPES  # the three scope names, for --scope's choices
 
 _TTY = sys.stdout.isatty()
 G, R_, Y, B, D, X = (
@@ -275,8 +276,7 @@ def cmd_graph(args) -> int:
     """
     import shutil
 
-    from qanat.api import build_graph
-    from qanat.graph import glyphs_for, ink_for, render
+    from qanat.graph import build_graph, glyphs_for, ink_for, render
     from qanat.project import validate
     from qanat.store import Store
 
@@ -309,27 +309,6 @@ def cmd_graph(args) -> int:
     ))
     return 0 if rep.ok else 1
 
-
-# ------------------------------------------------------------------------- tui
-def cmd_tui(args) -> int:
-    """The console without the browser: the graph, the alphas, and a live replay."""
-    from qanat.graph import glyphs_for, ink_for
-    from qanat.project import validate
-    from qanat.store import Store
-    from qanat.tui import run
-
-    project, root = _load(args)
-    rep = validate(project, root)
-    if not rep.ok and not args.force:
-        print(c("the contract does not hold. `qanat check` to see why, or --force.", R_))
-        return 1
-
-    store = Store(project.store_url(root))
-    _repair_after_crash(store, project, root)
-    # `run` closes the store itself -- see why in its docstring.
-    return run(project, root, store,
-               ink=ink_for(args.color, sys.stdout),
-               g=glyphs_for(sys.stdout, args.ascii))
 
 # ------------------------------------------------------------------------- run
 def cmd_run(args) -> int:
@@ -451,6 +430,21 @@ def cmd_backtest(args) -> int:
     print(f"    {'sum of periods':<16} {_money(added)}")
     print(f"    {c('net', G if net > 0 else R_)}              "
           f"{c(_money(net), G if net > 0 else R_)}  {D}compounded{X}")
+    #  Directly under net, because it changes how net reads. A rule that earned
+    #  12% in a market that rose 9% earned 3%, and printing only the first number
+    #  is the difference between a result and a claim.
+    if "benchmark_net" in t:
+        ex = t["excess_net"]
+        #  Which floor this is matters more than that there is one. Beating the market
+        #  and beating the pool you narrowed to are different achievements, and a line
+        #  that says only `benchmark` lets the easier one be read as the harder one.
+        spec = (res.conditions or {}).get("benchmark") or ""
+        against = {"equal_weight": "everything priced, equally",
+                   "universe_equal_weight": "the universe, equally"}.get(
+                       spec, f"holding {spec} instead" if spec else "doing nothing instead")
+        print(f"    {'benchmark':<16} {_money(t['benchmark_net'])}  {D}{against}{X}")
+        print(f"    {c('excess', G if ex > 0 else R_)}           "
+              f"{c(_money(ex), G if ex > 0 else R_)}  {D}what the rule added{X}")
     print()
     seg = res.segments or {}
     if seg.get("in_sample") and seg.get("out_of_sample"):
@@ -484,6 +478,14 @@ def cmd_backtest(args) -> int:
         print(f"    hit rate         {t['hit_rate'] * 100:6.1f}%")
     print(f"    turnover         {t['turnover']:7.2f}  {D}sum of |weight changes|{X}")
     print(f"    best / worst     {_money(t['best_period'])} / {_money(t['worst_period'])}")
+    #  What it cost in risk to earn the above. Two rules that made the same amount
+    #  are not the same rule if one of them halved on the way there.
+    sh = t.get("sharpe")
+    if sh is not None:
+        print(f"    sharpe           {sh:7.2f}  {D}per unit of its own vol, "
+              f"annualised at {t['periods_per_year']:.0f}/yr{X}")
+    if t.get("max_drawdown") is not None:
+        print(f"    max drawdown     {_money(t['max_drawdown'])}  {D}worst fall from a high{X}")
     print(f"\n  {D}qanat report {res.run_id}   the periods, one by one{X}\n")
     return 0 if not res.failures else 1
 
@@ -578,9 +580,10 @@ def cmd_compare(args) -> int:
 def cmd_serve(args) -> int:
     import uvicorn
 
-    from qanat.api import AppState, create_app
+    from qanat.mcp_http import create_app
     from qanat.plan import plan as plan_project
     from qanat.project import validate
+    from qanat.runtime import AppState
     from qanat.scheduler import Scheduler
     from qanat.store import Store
 
@@ -604,8 +607,19 @@ def cmd_serve(args) -> int:
     # name is allowed. A wildcard bind names nothing, and never arrives in `Host`
     # anyway -- serving under a real hostname stays a deliberate setting.
     named = [] if args.host in ("0.0.0.0", "::", "") else [args.host]
-    app = create_app(state, allow_hosts=named)
+    token = args.token or os.environ.get("QANAT_MCP_TOKEN") or None
+    loopback = args.host in ("127.0.0.1", "::1", "localhost")
+    if not loopback and not token:
+        print(c(f"refusing to serve {args.host} with no token. Pass --token or set "
+                f"QANAT_MCP_TOKEN.", R_))
+        return 2
+    app = create_app(None, args.scope, token=token, allow_hosts=named, state=state)
     if sched:
+        #  The unattended pass drives an agent, and the agent reaches the project
+        #  over the MCP endpoint this process is about to serve -- so it needs the
+        #  address. Handed over here rather than worked out in the scheduler, which
+        #  has no idea whether anything is listening.
+        sched.research_through(state, f"http://127.0.0.1:{args.port}")
         sched.start()
         if args.run_now:
             # one full pass in dependency order -- firing every job at once would
@@ -619,8 +633,8 @@ def cmd_serve(args) -> int:
             ).start()
 
     print(f"\n  {c('qanat', B)} {D}v{__version__}{X}  {project.name}")
-    print(f"  console  {c(f'http://{args.host}:{args.port}', B)}")
-    print(f"  api      {D}http://{args.host}:{args.port}/api/docs{X}")
+    print(f"  mcp      {c(f'http://{args.host}:{args.port}/mcp', B)} "
+          f"{D}scope {args.scope}{X}")
     print(f"  store    {D}{project.store_url(root)}{X}\n")
     sys.stdout.flush()  # uvicorn blocks next, and a piped stdout would never flush
     try:
@@ -702,16 +716,27 @@ def cmd_alphas(args) -> int:
 
 # ------------------------------------------------------------------------- mcp
 def cmd_mcp(args) -> int:
+    if getattr(args, "read_only", False):
+        print("qanat mcp: --read-only is gone. It split 33 tools into 23 and 10, which is "
+              "too blunt to be a promise. Use --scope data to read tables, or --scope "
+              "research to add replays. See docs/agents.md.", file=sys.stderr)
+        return 2
+    if args.http:
+        from qanat.mcp_http import serve_http
+
+        return serve_http(getattr(args, "project", None), scope=args.scope,
+                          host=args.host, port=args.port, token=args.token)
+
     from qanat.mcp import serve_stdio
 
-    return serve_stdio(getattr(args, "project", None), read_only=args.read_only)
+    return serve_stdio(getattr(args, "project", None), scope=args.scope)
 
 
 # ------------------------------------------------------------------------ main
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="qanat",
-        description="An agent-first backtesting engine that turns your raw data into portfolio weights through a pipeline of steps you define.",
+        description="An MCP server for quant factor processing and backtesting.",
     )
     p.add_argument("--version", action="version", version=f"qanat {__version__}")
     p.add_argument("-p", "--project", help="path to qanat.yaml (default: found by walking up)")
@@ -745,7 +770,7 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("ls", help="stages, tables, jobs")
     ls.set_defaults(func=cmd_ls)
 
-    gr = sub.add_parser("graph", help="the console's picture of the pipeline, in the terminal")
+    gr = sub.add_parser("graph", help="the pipeline as a picture, in the terminal")
     gr.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                     help="colour the stages (default: when stdout is a terminal)")
     gr.add_argument("--ascii", action="store_true", help="draw with - | + instead of box rules")
@@ -755,12 +780,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="fit to this many columns. 0 is unlimited (the default when piped)")
     gr.set_defaults(func=cmd_graph)
 
-    tu = sub.add_parser("tui", help="the console in the terminal: graph, alphas, live replays")
-    tu.add_argument("--color", choices=("auto", "always", "never"), default="always",
-                    help="colour the stages (default: always -- it is a terminal by definition)")
-    tu.add_argument("--ascii", action="store_true", help="draw with - | + instead of box rules")
-    tu.add_argument("--force", action="store_true", help="open even if the contract fails")
-    tu.set_defaults(func=cmd_tui)
 
     r = sub.add_parser("run", help="one pass over the whole graph, or one job")
     r.add_argument("job", nargs="?")
@@ -814,14 +833,30 @@ def build_parser() -> argparse.ArgumentParser:
     al.set_defaults(func=cmd_alphas)
 
     mc = sub.add_parser("mcp", help="serve this project to an agent over MCP (stdio)")
-    mc.add_argument("--read-only", action="store_true", help="expose no tool that writes")
+    mc.add_argument("--scope", choices=list(SCOPES), default="full",
+                    help="which tools to offer: data reads tables, research adds replays, "
+                         "full adds authoring and ingest (default: full)")
+    mc.add_argument("--http", action="store_true",
+                    help="serve MCP over HTTP instead of stdio, for a client that is not "
+                         "on this machine")
+    mc.add_argument("--host", default="127.0.0.1", help="with --http (default: 127.0.0.1)")
+    mc.add_argument("--port", type=int, default=8421, help="with --http (default: 8421)")
+    mc.add_argument("--token", help="with --http: the bearer token a caller must send. "
+                                    "Required to bind anything but loopback. Also "
+                                    "QANAT_MCP_TOKEN")
+    # Removed, and kept only so it can say what replaced it rather than die in argparse.
+    mc.add_argument("--read-only", action="store_true", help=argparse.SUPPRESS)
     mc.set_defaults(func=cmd_mcp)
 
-    s = sub.add_parser("serve", help="scheduler and console")
+    s = sub.add_parser("serve", help="run the scheduler, and serve this project over MCP")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8420)
     s.add_argument("--workers", type=int, default=4)
-    s.add_argument("--no-schedule", action="store_true", help="serve the console, run nothing")
+    s.add_argument("--no-schedule", action="store_true", help="serve MCP, run nothing")
+    s.add_argument("--scope", choices=list(SCOPES), default="full",
+                   help="which tools to offer over MCP (default: full)")
+    s.add_argument("--token", help="the bearer token a caller must send. Required to bind "
+                                   "anything but loopback. Also QANAT_MCP_TOKEN")
     s.add_argument("--run-now", action="store_true", help="fire every job once at startup")
     s.add_argument("--log-level", default="warning")
     s.add_argument("--force", action="store_true")

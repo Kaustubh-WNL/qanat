@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 import threading
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -30,6 +32,7 @@ from typing import Any, NamedTuple
 import pandas as pd
 
 from qanat import progress
+from qanat.context import is_point_in_time, members
 from qanat.models import Project
 from qanat.retention import parse_duration
 from qanat.runner import order, run_all
@@ -352,15 +355,223 @@ def score_period(
     ), notes
 
 
-def totals_of(periods: list[Period]) -> dict[str, Any]:
+#: The two benchmarks qanat computes rather than reads off a symbol. Both hold a
+#: list in equal parts and differ only in which list -- which is the whole point:
+#: one answers "against the market", the other "against the pool this run was
+#: allowed to hold", and a strategy whose only claim is that it picks inside that
+#: pool is answerable to the second one.
+SYNTHETIC_BENCHMARKS = ("equal_weight", "universe_equal_weight")
+
+
+def _held_equally(a: pd.Series, b: pd.Series, only: set[str] | None = None) -> float:
+    """One share of everything priced at both ends of a period.
+
+    A symbol that was not trading across the period is dropped rather than counted
+    as a zero return -- it was not a holding. A period where nothing was priced is
+    flat, which is what holding nothing earns.
+    """
+    if only is not None:
+        cols = [c for c in a.index if c in only]
+        a, b = a[cols], b[cols]
+    r = (b / a - 1.0).dropna()
+    return float(r.mean()) if len(r) else 0.0
+
+
+def benchmark_returns(prices: pd.DataFrame, periods: list[Period], spec: str,
+                      universe: pd.DataFrame | None = None,
+                      symbol_column: str = "symbol") -> list[float] | None:
+    """What the benchmark did over each of the same holding periods.
+
+    Priced on the strategy's own period boundaries rather than on a calendar, so
+    the two are comparable period for period -- a benchmark measured over a
+    different window is a different question wearing the same label.
+
+    Costs are not charged to it. A benchmark is the thing you could have held by
+    doing nothing, and doing nothing does not pay turnover.
+
+    Three things `spec` can be:
+
+      * a symbol in the price table -- hold that one thing.
+      * `equal_weight` -- hold everything the price table carries. The market, as
+        far as this project has one.
+      * `universe_equal_weight` -- hold the run's universe, on each date, in equal
+        parts. `universe` is that universe's file, and membership is read per
+        period from the day the portfolio was decided, so the floor moves as the
+        pool moved.
+
+    The difference between those last two is the difference between two questions,
+    and a rule that narrowed to one sector owes an answer to both. `equal_weight`
+    asks whether the rule beat the market -- which a rule riding a sector that
+    doubled will pass without picking anything well. `universe_equal_weight` asks
+    the harder one: whether any of the work after choosing the pool was worth
+    doing, or whether holding the pool itself would have earned the same.
+    """
+    if not spec or not periods:
+        return None
+    if spec == "universe_equal_weight" and universe is None:
+        return None
+    if spec not in SYNTHETIC_BENCHMARKS and spec not in prices.columns:
+        return None
+    out: list[float] = []
+    for p in periods:
+        try:
+            a = prices.loc[pd.Timestamp(p.priced_from)]
+            b = prices.loc[pd.Timestamp(p.priced_to)]
+        except KeyError:
+            out.append(0.0)
+            continue
+        if spec == "equal_weight":
+            out.append(_held_equally(a, b))
+        elif spec == "universe_equal_weight":
+            #  As of the day the portfolio was decided, not the day it was priced.
+            #  The benchmark has to be the pool the step was choosing from, and the
+            #  step was choosing at `as_of`.
+            out.append(_held_equally(a, b, _universe_symbols(universe, p.as_of, symbol_column)))
+        else:
+            x, y = a.get(spec), b.get(spec)
+            out.append(0.0 if (pd.isna(x) or pd.isna(y) or not x) else float(y / x - 1.0))
+    return out
+
+
+def _universe_symbols(universe: pd.DataFrame | None, as_of: str,
+                      symbol_column: str = "symbol") -> set[str]:
+    """Who was in the universe on one day, by the name the prices call them."""
+    if universe is None:
+        return set()
+    rows = members(universe, as_of)
+    col = symbol_column if symbol_column in rows.columns else "symbol"
+    if col not in rows.columns:
+        return set()
+    return set(rows[col].astype(str))
+
+
+def t_stat(totals: dict[str, Any]) -> float | None:
+    """How many standard errors the average period is away from zero.
+
+    Falls out of the Sharpe already computed. The t-stat of a mean over n periods
+    is `(mean / sd) * sqrt(n)`, and the Sharpe reported here is that same ratio
+    annualised by `periods_per_year` -- so the two differ only by how much time
+    the run covers:
+
+        t = sharpe * sqrt(years)
+
+    Which says the plain thing out loud: a good ratio measured over three months
+    is not the same evidence as the same ratio measured over ten years, and only
+    one of them should survive being divided by the number of things you tried.
+    """
+    sh, n, ppy = totals.get("sharpe"), totals.get("periods"), totals.get("periods_per_year")
+    if sh is None or not n or not ppy:
+        return None
+    return float(sh) * math.sqrt(float(n) / float(ppy))
+
+
+def gate_promotion(store: Any, project: Any, run_id: int) -> str:
+    """Why this run may not be called live, or "" if it may.
+
+    The one thing the bar is worth blocking. Nothing else here is a decision --
+    a replay is a measurement and measuring is always allowed -- but writing
+    `live` against a run is a claim that it works, and a claim that has not
+    cleared the bar the project set is the exact thing the bar exists to stop.
+
+    Refuses rather than warns only when `gate` is on. Off, this returns "" and
+    the verdict is reported beside the number for a person to weigh, which is
+    the right default: a tool that starts refusing things on day one gets its
+    bar set to `none` and stays there.
+    """
+    bt = getattr(project, "backtest", None)
+    bar = getattr(bt, "bar", None) if bt else None
+    if bar is None or not getattr(bar, "gate", False):
+        return ""
+    row = store.backtest(run_id)
+    if row is None:
+        return ""
+    import json as _json
+
+    try:
+        report = _json.loads(row["report"]) if row.get("report") else {}
+    except (TypeError, ValueError):
+        report = {}
+    totals = report.get("totals") or {}
+    trials = store.trial_count(str(row.get("alpha") or ""))
+    v = bar_verdict(totals, trials, bar)
+    if v.get("clears") is False:
+        return (f"run {run_id} does not clear the bar: {v['note']}, and it has "
+                f"t {v['t']:.2f}. Lower the bar deliberately if you mean to, or "
+                "leave this as a candidate")
+    if v.get("clears") is None:
+        return (f"run {run_id} cannot be judged against the bar yet: {v.get('note')}")
+    return ""
+
+
+def bar_verdict(totals: dict[str, Any], trials: int, bar: Any) -> dict[str, Any]:
+    """What this result had to clear, and whether it did.
+
+    Explains rather than judges. The rule, the number of trials it was divided by
+    and the bar that produced are all returned, because a verdict nobody can check
+    is worth about as much as no verdict.
+    """
+    rule = getattr(bar, "rule", "none") if bar else "none"
+    t = t_stat(totals)
+    out: dict[str, Any] = {"rule": rule, "trials": max(1, int(trials or 1)),
+                           "t": t, "required": None, "clears": None,
+                           "gate": bool(getattr(bar, "gate", False)) if bar else False}
+    if rule == "none" or t is None:
+        out["note"] = ("no bar is set, so these figures are reported and nothing is "
+                       "required of them" if rule == "none"
+                       else "not enough periods to say anything about significance")
+        return out
+
+    if rule == "floor":
+        out["required"] = float(getattr(bar, "t_floor", 3.0))
+        out["note"] = (f"a fixed bar of t ≥ {out['required']:.1f}, whatever was tried "
+                       "to get here")
+    else:
+        #  Divide the significance you would have demanded of one test by the
+        #  number of tests actually run. Crude next to a deflated Sharpe, and it
+        #  errs the safe way -- which for a bar is the right direction to err.
+        alpha = float(getattr(bar, "alpha", 0.05))
+        n = out["trials"]
+        from statistics import NormalDist
+
+        out["required"] = float(NormalDist().inv_cdf(1.0 - alpha / (2.0 * n)))
+        out["note"] = (f"{alpha:g} significance divided by {n} "
+                       f"{'trial' if n == 1 else 'trials'}, so t ≥ "
+                       f"{out['required']:.2f}")
+    out["clears"] = t >= out["required"]
+    return out
+
+
+def per_year(rebalance: str) -> float:
+    """How many holding periods a year holds, from the rebalance gap.
+
+    A period here is a rebalance, not a day, so the 252 everyone reaches for is
+    quietly wrong for anything but a daily strategy -- it would call a weekly
+    strategy five times more volatile than it is. The console works this out the
+    same way, from the same string, so the Sharpe drawn on the page and the one
+    written into the run agree.
+    """
+    m = re.match(r"^(\d+)\s*([a-z]+)$", str(rebalance or "1d").strip().lower())
+    if not m:
+        return 252.0
+    per = {"d": 1, "day": 1, "days": 1, "w": 7, "week": 7, "weeks": 7}.get(m.group(2), 1)
+    return 365.0 / max(1e-9, int(m.group(1)) * per)
+
+
+def totals_of(periods: list[Period], rebalance: str = "",
+              bench: list[float] | None = None) -> dict[str, Any]:
     """The run so far, from the periods closed so far. Valid mid-replay as well as
     at the end -- which is what lets the console show a number while it waits."""
     if not periods:
         return {"periods": 0}
     net = [p.net for p in periods]
+    # The equity path, kept rather than just its end, because the worst fall from a
+    # high is a property of the path and cannot be recovered from the total.
     equity = 1.0
+    peak, worst = 1.0, 0.0
     for n in net:
         equity *= 1.0 + n
+        peak = max(peak, equity)
+        worst = min(worst, equity / peak - 1.0)
     # A period that held nothing is still a period -- flat is a real result and it
     # belongs in the money. It is not a *decision*, though, and averaging over it
     # buries that. A lookback longer than the warm-up, or a feature table that
@@ -396,11 +607,71 @@ def totals_of(periods: list[Period]) -> dict[str, Any]:
         "equity": equity,
         "worst_period": min(net),
         "best_period": max(net),
+        # ---- what the return cost in risk to get ---------------------------
+        # Net on its own cannot be ranked. Two strategies that earned the same
+        # amount are not the same strategy if one of them halved on the way, and
+        # anything choosing between them -- a person, or a loop -- needs the
+        # denominator as well as the numerator.
+        #
+        # These are over every period, flat ones included, which is what the
+        # equity curve and the drawdown beside it are drawn from.
+        "vol": _stdev(net),
+        "sharpe": _sharpe(net, rebalance),
+        "max_drawdown": worst,
+        # Written down rather than assumed, so the Sharpe above can be checked.
+        "periods_per_year": per_year(rebalance),
+        **_versus(net, bench),
     }
 
 
+def _versus(net: list[float], bench: list[float] | None) -> dict[str, Any]:
+    """The same money in the benchmark, and the gap between the two.
+
+    Absent when no benchmark is configured -- the keys are missing rather than
+    zero, because a project without one has not measured this and should not be
+    able to read a number as though it had.
+    """
+    if not bench or len(bench) != len(net):
+        return {}
+    be = 1.0
+    for b in bench:
+        be *= 1.0 + b
+    eq = 1.0
+    for n in net:
+        eq *= 1.0 + n
+    return {
+        "benchmark_net": be - 1.0,
+        # Compounded difference, to sit beside `net`, which is also compounded.
+        "excess_net": eq - be,
+        # And the per-period version, which is the one to average or test.
+        "excess_per_period": (sum(net) - sum(bench)) / len(net),
+    }
+
+
+def _stdev(xs: list[float]) -> float:
+    """Sample standard deviation. Zero below two points, where it has no meaning."""
+    if len(xs) < 2:
+        return 0.0
+    m = sum(xs) / len(xs)
+    return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
+
+
+def _sharpe(xs: list[float], rebalance: str) -> float | None:
+    """Return per unit of its own volatility, annualised by the rebalance gap.
+
+    None rather than zero when there is nothing to divide by: a single period, or
+    a run that never moved, has no Sharpe, and reporting 0.0 for it would read as
+    a measured result rather than an absent one.
+    """
+    sd = _stdev(xs)
+    if sd == 0.0:
+        return None
+    return (sum(xs) / len(xs)) / sd * math.sqrt(per_year(rebalance))
+
+
 def segment(periods: list[Period], split: str | None,
-            frontier: str | None = None) -> dict[str, Any]:
+            frontier: str | None = None, rebalance: str = "",
+            bench: list[float] | None = None) -> dict[str, Any]:
     """The run cut into the parts that are worth different amounts.
 
     Every knob -- the lookback, the rebalance gap, the decay -- was chosen by
@@ -416,28 +687,44 @@ def segment(periods: list[Period], split: str | None,
     It has to be stamped rather than worked out now: computed fresh each time, it
     would move forward every day and collapse back into out of sample.
     """
-    if not split and not frontier:
-        return {"split": None, "all": totals_of(periods)}
-    out: dict[str, Any] = {"split": None, "all": totals_of(periods)}
+    #  Periods and their benchmark returns travel together through every cut
+    #  below. Filtering one without the other would line a segment's return up
+    #  against the wrong stretch of market, which is worse than having no
+    #  benchmark at all: it would still print a number.
+    pairs = list(zip(periods, bench if bench and len(bench) == len(periods)
+                     else [None] * len(periods)))
 
-    live: list[Period] = []
-    dated = periods
+    def split_pairs(rows: list[tuple[Period, float | None]]):
+        ps = [p for p, _ in rows]
+        bs = [b for _, b in rows]
+        return ps, (None if any(b is None for b in bs) else bs)
+
+    def totals(rows: list[tuple[Period, float | None]]) -> dict[str, Any]:
+        ps, bs = split_pairs(rows)
+        return totals_of(ps, rebalance, bs)
+
+    if not split and not frontier:
+        return {"split": None, "all": totals(pairs)}
+    out: dict[str, Any] = {"split": None, "all": totals(pairs)}
+
+    live: list[tuple[Period, float | None]] = []
+    dated = pairs
     if frontier:
         edge = pd.Timestamp(frontier)
-        live = [p for p in periods if pd.Timestamp(p.as_of) > edge]
-        dated = [p for p in periods if pd.Timestamp(p.as_of) <= edge]
+        live = [r for r in pairs if pd.Timestamp(r[0].as_of) > edge]
+        dated = [r for r in pairs if pd.Timestamp(r[0].as_of) <= edge]
         out["frontier"] = str(edge)
-        out["live"] = totals_of(live)
+        out["live"] = totals(live)
 
     if not split:
         return out
     cut = pd.Timestamp(split)
-    is_ = [p for p in dated if pd.Timestamp(p.as_of) < cut]
-    oos = [p for p in dated if pd.Timestamp(p.as_of) >= cut]
+    is_ = [r for r in dated if pd.Timestamp(r[0].as_of) < cut]
+    oos = [r for r in dated if pd.Timestamp(r[0].as_of) >= cut]
     out.update({
         "split": str(cut),
-        "in_sample": totals_of(is_),
-        "out_of_sample": totals_of(oos),
+        "in_sample": totals(is_),
+        "out_of_sample": totals(oos),
     })
     if dated and (not is_ or not oos):
         out["warning"] = (
@@ -445,14 +732,14 @@ def segment(periods: list[Period], split: str | None,
             "period(s). One side is empty, so there is nothing to compare"
         )
     elif oos and is_:
-        a, b = totals_of(is_)["net_per_period"], totals_of(oos)["net_per_period"]
+        a, b = (out["in_sample"]["net_per_period"], out["out_of_sample"]["net_per_period"])
         out["decay_vs_in_sample"] = None if a == 0 else (b - a) / abs(a)
     return out
 
 
 def score(
     prices: pd.DataFrame, held: dict[str, pd.Series], stops: list[str], project: Project,
-    costs: Costs | None = None,
+    costs: Costs | None = None, universe: pd.DataFrame | None = None,
 ) -> tuple[list[Period], dict[str, Any], list[str]]:
     """Every period at once. The replay itself scores incrementally; this is the
     same arithmetic in one call, for anything holding a finished set of portfolios."""
@@ -467,7 +754,11 @@ def score(
         if period is not None:
             periods.append(period)
             previous = w if w is not None else pd.Series(dtype=float)
-    return periods, totals_of(periods), notes
+    gap = project.backtest.rebalance if project.backtest else ""
+    spec = project.backtest.benchmark if project.backtest else ""
+    sym = project.backtest.symbol_column if project.backtest else "symbol"
+    bench = benchmark_returns(prices, periods, spec, universe, sym)
+    return periods, totals_of(periods, gap, bench), notes
 
 
 # --------------------------------------------------------------- several books
@@ -581,6 +872,9 @@ def run_backtest(
     embargo: str | None = None,
     on_step: Any = None,
     live: bool = False,
+    #  Which conversation asked for this replay, when one did. A run from the
+    #  CLI or the scheduler belongs to none, and says so by leaving it empty.
+    session_id: str = "",
 ) -> BacktestResult:
     """Replay the pipeline across a window and price what it held."""
     if not _REPLAY.acquire(blocking=False):
@@ -593,7 +887,7 @@ def run_backtest(
             store, project, root, frm, to, rebalance=rebalance, seed=seed, decay=decay,
             universe=universe, split=split, alpha=alpha, allocation=allocation,
             fee_bps=fee_bps, slippage_bps=slippage_bps, purge=purge, embargo=embargo,
-            on_step=on_step, live=live,
+            on_step=on_step, live=live, session_id=session_id,
         )
     finally:
         _REPLAY.release()
@@ -618,6 +912,7 @@ def _run_backtest(
     embargo: str | None = None,
     on_step: Any = None,
     live: bool = False,
+    session_id: str = "",
 ) -> BacktestResult:
     bt = project.backtest
     if bt is None:
@@ -698,6 +993,21 @@ def _run_backtest(
     # cost time and prove nothing about the one being priced.
     needed = set().union(*(_upstream_of(project, a) for a in alpha_ids))
 
+    # Costs are a condition of the run rather than of the file -- "where does this
+    # edge die?" -- but only upwards. A negative cost pays you to trade, so
+    # turnover becomes profit and the run lands in the strategy book looking like
+    # a discovery: -9999 bps once put +1938% into it with nothing marking it.
+    #
+    # This used to be a `ge=0` on the console's request model, which meant it held
+    # for exactly one caller. It is here so it holds for all of them.
+    for name, value in (("fee_bps", fee_bps), ("slippage_bps", slippage_bps)):
+        if value is not None and float(value) < 0:
+            raise BacktestError(
+                f"{name} is {value}. A negative cost pays you to trade, which turns "
+                f"turnover into profit. Costs go up from the file's figure, not down "
+                f"through zero."
+            )
+
     costs = Costs(
         bt.fee_bps if fee_bps is None else float(fee_bps),
         bt.slippage_bps if slippage_bps is None else float(slippage_bps),
@@ -729,12 +1039,14 @@ def _run_backtest(
                        cut_at, key + json.dumps(share, sort_keys=True) +
                        f"|{costs.fee_bps}|{costs.slippage_bps}|{costs.embargo}|{held_for}",
                        data=fingerprint)
-    run_id = store.start_backtest(frm, to, every, seed, digest, alpha=key, live=live)
+    run_id = store.start_backtest(frm, to, every, seed, digest, alpha=key,
+                                  live=live, session_id=session_id)
     result = BacktestResult(run_id, frm, to, every, seed, digest)
     result.conditions = {"alpha": key, "alphas": names, "allocation": share,
                          "from": frm, "to": to, "rebalance": every, "seed": seed,
                          "decay": smoothing, "split": cut_at or None,
                          "universe": universe or "(as declared on the step)",
+                         "benchmark": bt.benchmark or None,
                          "fee_bps": costs.fee_bps, "slippage_bps": costs.slippage_bps,
                          "purge": held_for, "embargo": costs.embargo,
                          "jobs_in_run": sorted(needed), "data": fingerprint,
@@ -750,6 +1062,34 @@ def _run_backtest(
                             f"last {smoothing} stops, newest heaviest")
     if universe:
         result.notes.append(f"universe overridden to '{universe}' for this run")
+
+    #  `universe_equal_weight` is the only benchmark that needs to know what the run
+    #  was allowed to hold, so its file is read here -- once, before the replay, for
+    #  the same reason the prices are: every pass rewrites the derived tables from a
+    #  slice of the past, and a benchmark is entitled to the whole history.
+    #
+    #  Which universe is the one the run actually used: the override if there was
+    #  one, otherwise the alphas' own. `_own` already refuses to choose when two
+    #  alphas priced together disagree, and that refusal is right here too -- a book
+    #  spanning two pools has no single pool to be measured against.
+    bench_universe: pd.DataFrame | None = None
+    if bt.benchmark == "universe_equal_weight":
+        bid = universe or _own("universe")
+        holdable = project.universe(bid) if bid else None
+        if holdable is None:
+            result.notes.append(
+                "benchmark `universe_equal_weight` needs a universe and this run has none: "
+                "no `universe:` on the alpha, and none passed to the run. The benchmark "
+                "lines are absent rather than zero"
+            )
+        else:
+            bench_universe = pd.read_csv(root / holdable.symbols)
+            if not is_point_in_time(bench_universe):
+                result.notes.append(
+                    f"universe '{holdable.id}' has no from/to dates, so this benchmark holds "
+                    f"today's list on every past date. It carries the same survivorship bias "
+                    f"the strategy does, which flatters both and the gap between them least"
+                )
     if clockless:
         result.notes.append(
             f"{len(clockless)} table(s) in this lineage have no time column, so the as-of "
@@ -831,8 +1171,11 @@ def _run_backtest(
                 result.notes.extend(notes)
                 if period is not None:
                     result.periods.append(period)
-                    result.totals = totals_of(result.periods)
-                    result.segments = segment(result.periods, cut_at, bt.live_from)
+                    bench = benchmark_returns(prices, result.periods, bt.benchmark,
+                                              bench_universe, bt.symbol_column)
+                    result.totals = totals_of(result.periods, result.rebalance, bench)
+                    result.segments = segment(result.periods, cut_at, bt.live_from,
+                                              result.rebalance, bench)
                     store.save_bt_period(run_id, period)
                     previous = smoothed.get(open_stop, pd.Series(dtype=float))
                     progress.period(asdict(period), result.totals, result.segments)

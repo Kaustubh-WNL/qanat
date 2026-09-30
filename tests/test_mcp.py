@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
+import pytest
+
 from qanat import mcp
-from qanat.api import AppState, create_app
 from qanat.project import load
 from qanat.runner import run_all
 from qanat.scaffold import write_project
@@ -33,11 +34,65 @@ def test_every_tool_declares_a_schema():
             assert req in schema["properties"], f"{t['name']}: '{req}' required but not described"
 
 
-def test_read_only_hides_every_tool_that_writes():
-    writers = {t["name"] for t in mcp.TOOLS if t["writes"]}
-    assert {"run", "backtest", "save_step"} <= writers
-    readers = {t["name"] for t in mcp.TOOLS if not t["writes"]}
-    assert writers.isdisjoint(readers)
+# ---------------------------------------------------------------------- scopes
+def test_every_tool_names_one_of_the_three_scopes():
+    assert mcp.SCOPES == ("data", "research", "full")
+    for t in mcp.TOOLS:
+        assert t["scope"] in mcp.SCOPES, f"{t['name']}: scope {t['scope']!r}"
+
+
+def test_a_tool_cannot_be_declared_without_a_scope():
+    with pytest.raises(TypeError):
+        mcp.tool("nope", "no scope given", {"properties": {}})
+
+
+def test_an_unknown_scope_says_what_the_three_are():
+    with pytest.raises(mcp.ScopeError) as exc:
+        mcp.tools_for("readonly")
+    assert "data, research, full" in str(exc.value)
+
+
+def test_the_scopes_nest():
+    data, research, full = (
+        [t["name"] for t in mcp.tools_for(s)] for s in mcp.SCOPES)
+    assert set(data) < set(research) < set(full)
+    assert len(full) == len(mcp.TOOLS)
+    # whatever the scope, the order a caller sees is the declaration order
+    assert data == [n for n in full if n in set(data)]
+    assert research == [n for n in full if n in set(research)]
+
+
+def test_data_offers_nothing_that_writes():
+    assert not [t["name"] for t in mcp.tools_for("data") if t["writes"]]
+
+
+def test_research_writes_results_and_never_the_project_file():
+    writers = {t["name"] for t in mcp.tools_for("research") if t["writes"]}
+    assert writers == {"backtest", "record_trial"}
+    # set_bar edits qanat.yaml, so it is authoring: a hosted research caller
+    # must not be able to lower the bar the trials it records are held to
+    assert {"set_bar", "save_step", "save_source", "run"} <= {
+        t["name"] for t in mcp.TOOLS if t["scope"] == "full"}
+
+
+def test_a_tool_above_the_scope_says_so_instead_of_denying_it_exists(tmp_path: Path):
+    session = _session(tmp_path)
+    reply = mcp._dispatch(session, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                    "params": {"name": "save_step", "arguments": {}}},
+                          mcp.tools_for("data"))
+    body = reply["result"]["content"][0]["text"]
+    assert reply["result"]["isError"] is True
+    assert "'full' scope" in body and "--scope full" in body
+    session.close()
+
+
+def test_a_tool_that_does_not_exist_still_says_that(tmp_path: Path):
+    session = _session(tmp_path)
+    reply = mcp._dispatch(session, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                    "params": {"name": "teleport", "arguments": {}}},
+                          mcp.tools_for("data"))
+    assert "no tool called 'teleport'" in reply["result"]["content"][0]["text"]
+    session.close()
 
 
 def test_initialize_and_list_speak_the_protocol(tmp_path: Path):
@@ -114,20 +169,20 @@ def test_lineage_knows_what_breaks_the_portfolio(tmp_path: Path):
 
 
 def test_check_is_not_cli_only(tmp_path: Path):
-    """Parity: the same answer through MCP and through the HTTP API."""
-    from fastapi.testclient import TestClient
+    """Parity: the tool answers exactly what the contract check answers.
+
+    This used to compare MCP against the console's `/api/check`. There is one
+    door now, so the thing worth comparing against is the function underneath --
+    which is what the API was calling too.
+    """
+    from qanat.project import validate
 
     session = _session(tmp_path)
-    project, root = load(tmp_path)
-    store = Store(project.store_url(root))
-    client = TestClient(create_app(AppState(store=store, project=project, root=root, sched=None)),
-                        base_url="http://127.0.0.1:8420")
-
-    over_http = client.get("/api/check").json()
+    rep = validate(session.project, session.root)
     over_mcp = _call(session, "check")
-    assert over_http == over_mcp
-    assert over_http["ok"] is True
-    store.close()
+
+    assert over_mcp == {"ok": rep.ok, "errors": rep.errors, "warnings": rep.warnings}
+    assert over_mcp["ok"] is True
     session.close()
 
 
@@ -171,10 +226,14 @@ def test_conditions_are_asked_for_not_assumed(tmp_path: Path):
     session.close()
 
 
-def test_the_console_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
-    """Two doors on one engine. If they can disagree about which tables stopped
-    being current, one of them is lying to somebody."""
-    from fastapi.testclient import TestClient
+def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
+    """Two readers of one engine. If they can disagree about which tables stopped
+    being current, one of them is lying to somebody.
+
+    `build_graph` is what `qanat graph` draws from. It used to be reached through
+    the console's `/api/graph`; the comparison is the same one either way.
+    """
+    from qanat.graph import build_graph
 
     session = _session(tmp_path)
     script = tmp_path / "steps" / "normalize.sql"
@@ -185,12 +244,10 @@ def test_the_console_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
 
     project, root = load(tmp_path)
     store = Store(project.store_url(root))
-    client = TestClient(create_app(AppState(store=store, project=project, root=root, sched=None)),
-                        base_url="http://127.0.0.1:8420")
-    graph = client.get("/api/graph").json()
-    over_http = {t["ref"] for t in graph["tables"] if t.get("stale")}
+    graph = build_graph(store, project, root, None)
+    in_the_picture = {t["ref"] for t in graph["tables"] if t.get("stale")}
 
-    assert over_mcp == over_http, f"mcp says {over_mcp}, the console says {over_http}"
+    assert over_mcp == in_the_picture, f"mcp says {over_mcp}, the graph says {in_the_picture}"
     assert "normalized.prices" in over_mcp
     store.close()
     session.close()
