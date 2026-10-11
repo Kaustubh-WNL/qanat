@@ -1,0 +1,81 @@
+#!/bin/sh
+# Refuse a push that would publish a commit authored or committed under one of
+# your *other* addresses.
+#
+# .githooks/pre-commit already refuses an overridden email at commit time, but
+# it only runs on `git commit`. A rebase, cherry-pick, merge or `am` creates
+# commits without ever calling it, and --no-verify walks past it. This hook is
+# the last gate before anything becomes public, and it sees every commit in the
+# push rather than one at a time.
+#
+# The rule here is narrower than pre-commit's on purpose. pre-commit asks "is
+# this your configured address", which is right for a commit you are writing.
+# A push can legitimately carry commits by other people -- a merged pull
+# request, a cherry-picked patch -- so the same question here would refuse
+# genuine contributors. Instead this one refuses a specific list of addresses
+# that are yours but belong to another account.
+#
+# The list lives in config, not in this file, because this repository is public
+# and the addresses are not:
+#
+#     git config --add hooks.forbiddenAuthorEmail someone@example.com
+#
+# With nothing configured the hook does nothing, so a fresh clone is unaffected.
+#
+# To push such a commit on purpose: git push --no-verify
+
+remote=$1
+forbidden=$(git config --get-all hooks.forbiddenAuthorEmail 2>/dev/null)
+[ -n "$forbidden" ] || exit 0
+
+zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+found=''
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+	# A branch deletion pushes nothing.
+	[ "$local_sha" = "$zero" ] && continue
+
+	if [ "$remote_sha" = "$zero" ]; then
+		# New branch: everything on it that the remote does not already have.
+		range="$local_sha --not --remotes=$remote"
+	else
+		range="$remote_sha..$local_sha"
+	fi
+
+	# %H author-email committer-email, one commit per line.
+	commits=$(git rev-list $range --format='%H %ae %ce' | grep -v '^commit ')
+	[ -n "$commits" ] || continue
+
+	for email in $forbidden; do
+		hit=$(printf '%s\n' "$commits" | awk -v bad="$email" '$2 == bad || $3 == bad')
+		[ -n "$hit" ] && found="$found$hit
+"
+	done
+done
+
+[ -n "$found" ] || exit 0
+
+{
+	echo "push refused: these commits carry an address that is yours but belongs"
+	echo "to another account, and GitHub would attribute them to that account:"
+	echo
+	printf '%s' "$found" | sort -u | while read -r sha ae ce; do
+		subject=$(git log -1 --format=%s "$sha")
+		printf '    %s  %s\n' "$(echo "$sha" | cut -c1-9)" "$subject"
+		printf '              author %s  committer %s\n' "$ae" "$ce"
+	done
+	echo
+	echo "Once pushed this is very hard to undo. A history rewrite clears your own"
+	echo "branches, but GitHub pins every pull request head at refs/pull/N/head and"
+	echo "those refs cannot be deleted by you -- the commits stay reachable there,"
+	echo "and the contributor list keeps reading them."
+	echo
+	echo "Rewrite the authorship before pushing:"
+	echo
+	echo "    git rebase -r --exec 'git commit --amend --no-edit --reset-author' <base>"
+	echo
+	echo "The list of refused addresses is hooks.forbiddenAuthorEmail in git config."
+	echo "To push one deliberately, pass --no-verify."
+} >&2
+
+exit 1
