@@ -29,6 +29,49 @@ zero would read as a measured result instead of an absent one.
 good ratio over three months is not the same evidence as the same ratio over ten years, and only
 one of them should survive being divided by the number of things you tried.
 
+## A basket is one cut of a ranking, and the indicator is the whole of it
+
+`qanat backtest --indicator features.momentum:momentum`, or `indicators:` in the `backtest:` block,
+scores a column on its own alongside the basket. Repeat the flag for several.
+
+| field | |
+| --- | --- |
+| `ic` | rank correlation between the column and the return that followed, per as-of date |
+| `spread` | the top group's mean return minus the bottom group's, split into `groups:` (default 5) |
+| `autocorr` | rank correlation with the same column on the previous as-of date |
+| `n` | names that had both a value and a price on both ends of the period |
+
+The summary adds `ic_mean`, `ic_t`, which is that mean against its own scatter, and `ic_hit`, the
+share of dates the correlation was positive. A mean of 0.08 carried by two dates out of forty reads
+differently beside a hit rate of 0.5.
+
+**Why it is not the same question as net.** A basket holds the top few names, so it answers what
+that one cut paid. The IC asks whether the order was right across everything the column covered, and
+the spread asks how far apart its two ends were. A column can rank the universe well and still lose
+money in the basket, because the top four happened to be the part that failed, and the reverse
+happens just as often with a small `top_n`.
+
+**Correlation is on ranks, not values.** A column is used as an ordering, so one outlier should not
+decide whether it worked.
+
+**Both are measured on the period's own two price days.** The same `_price_at` fill rule applies: the
+return begins at the first price strictly after the as-of date and ends at the first price strictly
+after the next one. The indicator and the basket therefore read the same window, and an indicator
+row only ever exists for a period that was priced.
+
+**`ic` is `null` rather than `0.0`** where fewer than three names could be compared, or where the
+column or the returns hold one value. Zero would read as a measured relationship of none.
+
+**No spread rather than a narrow one.** With fewer than two names per end, the spread is not
+reported and the run says so once, naming the `groups:` value that would fit. Quietly splitting ten
+names into five groups of two and calling the ends a top and a bottom decile is how a measure stops
+meaning what its name says.
+
+**One sweep is not one trial.** Scoring twenty columns in a replay is twenty attempts at finding
+something, and `_qanat_asks` is where that is kept. The engine does not record them for you:
+`record_trial` is a call the caller makes, and `bar: {rule: count}` is what divides the significance
+by the number of them. Without both, the best IC of twenty is the luckiest of twenty.
+
 ## The benchmark is priced on the strategy's own periods
 
 Not on a calendar. A benchmark measured over a different window is a different question wearing

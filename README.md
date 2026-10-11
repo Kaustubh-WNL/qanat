@@ -182,6 +182,15 @@ date, so a step cannot see the future. It prices what the basket held, takes off
 and the headline number is what is left. `--step` picks which weights table to price, and is needed
 once a project writes more than one.
 
+**A basket is one cut of a ranking.** `--indicator features.momentum:momentum` scores the column
+itself as well: the rank correlation with the return that followed, date by date, and the top group's
+return against the bottom group's. A column can order the universe well and still lose money in a
+basket of four names, so the two numbers answer different questions and the replay reports both.
+
+```bash
+qanat backtest --from … --to … --step sort_on_momentum --indicator features.momentum:momentum
+```
+
 Three kinds of period come out of it: in-sample, out-of-sample, and live. Live is the only one that
 cannot be arrived at by looking, because it is priced after a `live_from` date that was stamped
 before the rows existed.

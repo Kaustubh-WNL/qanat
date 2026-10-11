@@ -276,11 +276,41 @@ class Backtest(Base):
     # Stamped once, on the first live pass -- computed fresh each time, it would
     # move forward daily and mean nothing.
     live_from: str = ""
+    # Which indicator columns a replay scores on their own, as `stage.table:column`.
+    # A basket answers "what would holding the top of this ranking have earned",
+    # which is one question about one cut of the ranking. These answer the other
+    # one: did the ranking order the whole universe, and how wide was the gap
+    # between its ends. Empty means a replay prices the basket and nothing else.
+    indicators: list[str] = Field(default_factory=list)
+    # How many groups the spread splits the ranking into. 5 is quintiles, so the
+    # spread is the top fifth against the bottom fifth.
+    groups: int = 5
 
     @field_validator("prices")
     @classmethod
     def _prices_qualified(cls, v: str) -> str:
         return _qualified([v])[0]
+
+    @field_validator("indicators")
+    @classmethod
+    def _indicators_qualified(cls, v: list[str]) -> list[str]:
+        out = []
+        for item in v:
+            ref, _, col = str(item).partition(":")
+            if not col:
+                raise ValueError(
+                    f"indicator {item!r} needs a column: write it as stage.table:column, "
+                    f"e.g. features.momentum:momentum"
+                )
+            out.append(f"{_qualified([ref])[0]}:{col}")
+        return out
+
+    @field_validator("groups")
+    @classmethod
+    def _groups_sane(cls, v: int) -> int:
+        if v < 2:
+            raise ValueError(f"groups is {v}: a spread needs at least two ends")
+        return v
 
 
 class Agent(Base):

@@ -31,6 +31,9 @@ Four more words belong to `qanat backtest`:
 | **live** | Scoring forward as data arrives, instead of once over a window that already happened. |
 | **frontier** | The last date the data held when live scoring was switched on. Stamped once. Everything after it is a return nobody could have looked at while choosing the step. |
 | **held** | A period the step held something. A period that held nothing is still a period and still in the money -- it is not a decision, so the averages say both. |
+| **indicator** | One number per symbol per date, computed by a step. A column, not a basket: it says nothing about what to hold. |
+| **IC** | Rank correlation between an indicator and the return that followed, per as-of date. Whether the order was right, not whether the top paid. |
+| **spread** | The top group's mean return minus the bottom group's, over the same period. How far apart the ends of the ranking were. |
 
 Three more words belong to `qanat plan`:
 
@@ -63,9 +66,11 @@ line of this file forbids, so it was deleted on 2026-10-11 rather than renamed. 
 | `rebalance:` | step | how often this step wants to decide; a backtest uses it unless told otherwise |
 | `decay:` | step | how many baskets this step wants blended |
 | `mode:` | source | `append` or `replace` |
-| `kind:` | stage | `raw` · `features` · `weights` · `pnl` |
+| `kind:` | stage | `raw` · `normalized` · `features` · `weights` · `pnl` |
 | `store:` | project | path to the one DuckDB file |
 | `backtest:` | project | what prices the portfolio, and what holding it costs |
+| `indicators:` | backtest | columns scored on their own as well, written `stage.table:column` |
+| `groups:` | backtest | how many groups the spread splits a ranking into; 5 is quintiles |
 
 A source and a step both say `to:`, because writing a table is the same act whichever one does it.
 

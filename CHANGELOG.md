@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### An indicator can be scored on its own, not only through a basket
+
+`qanat backtest --indicator features.momentum:momentum`, or `indicators:` in the `backtest:`
+block, scores a column alongside the basket. Repeat the flag for several.
+
+| | |
+| --- | --- |
+| `ic` | rank correlation between the column and the return that followed, per as-of date |
+| `spread` | the top group's mean return minus the bottom group's, over `groups:` groups (default 5) |
+| `autocorr` | rank correlation with the same column on the previous as-of date |
+
+The summary carries `ic_mean`, `ic_t` and `ic_hit`, the share of dates the correlation was
+positive. `qanat backtest` and `qanat report` print the block, the `backtest` MCP tool takes an
+`indicators` array, and `report` returns both the summary and the per-date rows.
+
+Until now the only way to ask whether an indicator meant anything was to hold the top of it and
+look at the money. That answers one cut of the ranking. A column can order the universe and still
+lose in a basket of four names, and the reverse happens as often.
+
+Both numbers are measured on the period's own two price days, so the fill rule does not change:
+the return starts at the first price strictly after the as-of date. An indicator row only exists
+for a period that was priced.
+
+`ic` is `null` rather than `0.0` where fewer than three names could be compared, or where the
+column or the returns hold one value. Where fewer than two names land in each end, no spread is
+reported and the run says so once, naming the `groups:` value that would fit.
+
+**One sweep is not one trial.** Scoring twenty columns is twenty attempts at finding something.
+The engine does not record them for you: `record_trial` is still the caller's call, and
+`bar: {rule: count}` is what divides the significance by how many there were.
+
+New table `_qanat_bt_indicators`, one row per indicator per period, created on open like the rest
+of the meta tables. Nothing existing changes shape.
+
+
 ## 0.3.1 — 2026-10-11
 
 **Breaking, despite the patch number.** Four tools are deleted, two CLI flags are renamed,

@@ -249,3 +249,24 @@ def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
     assert "normalized.prices" in over_mcp
     store.close()
     session.close()
+
+
+def test_backtest_conditions_offers_indicator_candidates(tmp_path: Path):
+    """An agent cannot ask for a column it does not know exists, and the point of
+    this tool is that it asks rather than assumes."""
+    s = _session(tmp_path)
+    out = _call(s, "backtest_conditions")
+    cands = out["indicators"]["candidates"]
+    assert "features.momentum:momentum" in cands
+    # The clock and the symbol are not indicators, whatever their type says.
+    assert not any(c.endswith((":date", ":symbol")) for c in cands)
+
+
+def test_the_backtest_tool_scores_an_indicator_when_asked(tmp_path: Path):
+    s = _session(tmp_path)
+    bars = s.store.read("normalized.prices")
+    frm, to = str(bars["date"].min().normalize()), str(bars["date"].max().normalize())
+    out = _call(s, "backtest", {"from": frm, "to": to, "rebalance": "10d",
+                                "indicators": ["features.momentum:momentum"]})
+    assert [r["indicator"] for r in out["indicators"]] == ["features.momentum:momentum"]
+    assert out["indicator_periods"], "the per-date rows should come back too"

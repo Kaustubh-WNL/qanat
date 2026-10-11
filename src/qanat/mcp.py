@@ -376,6 +376,23 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
             df = s.store.read(bt.prices)
             span = {"earliest": str(df[col].min()), "latest": str(df[col].max())}
 
+    # Which columns could be scored on their own: the numeric ones in a computed
+    # stage, because that is what an indicator is -- one number per symbol per date.
+    candidates: list[str] = []
+    computed = {st.id for st in s.project.stages if st.kind == "features"}
+    for ref in s.project.tables():
+        if ref.split(".")[0] not in computed:
+            continue
+        info = s.store.table_info(ref)
+        if info is None:
+            continue
+        clock = s.store.time_column(ref, s.project.time_columns.get(ref))
+        for name, kind in info.columns:
+            if name in (clock, bt.symbol_column, bt.date_column):
+                continue
+            if any(k in str(kind).upper() for k in ("INT", "DOUBLE", "FLOAT", "DECIMAL", "NUMERIC")):
+                candidates.append(f"{ref}:{name}")
+
     universes = [{"id": u.id, "index": u.index,
                   "symbols_file": u.symbols} for u in s.project.universes]
     on_steps = sorted({st.universe for st in s.project.steps if st.universe})
@@ -410,6 +427,14 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
         "costs_are_fixed_in_the_file": {"fee_bps": bt.fee_bps, "slippage_bps": bt.slippage_bps,
                                         "purge": bt.purge, "embargo": bt.embargo},
         "seed": {"default": 0, "note": "same seed, same answer"},
+        "indicators": {
+            "default": list(bt.indicators),
+            "candidates": candidates[:40],
+            "note": "columns to score on their own as well, written stage.table:column. Returns "
+                    "the rank correlation with the return that followed and the top-minus-bottom "
+                    "spread, which is a different question from what the basket earned. Scoring "
+                    "several is several attempts: record_trial each one",
+        },
     }
 
 
@@ -449,6 +474,15 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
                       "embargo": {"type": "string",
                                   "description": "wait this long after the as-of date before a "
                                                  "return counts, e.g. 1d"},
+                      "indicators": {"type": "array", "items": {"type": "string"},
+                                     "description": "also score these columns on their own, as "
+                                                    "stage.table:column. Returns the rank "
+                                                    "correlation with the return that followed "
+                                                    "(IC), its t-statistic, the share of dates it "
+                                                    "was positive, and the top-minus-bottom "
+                                                    "spread. A basket answers what the top of a "
+                                                    "ranking paid; this answers whether the "
+                                                    "ranking ordered anything at all"},
                       "seed": {"type": "integer", "default": 0}},
        "required": ["from", "to"]},
       writes=True,
@@ -467,11 +501,15 @@ def _backtest(s: Session, args: dict) -> Any:
             allocation=args.get("allocation") or None,
             fee_bps=args.get("fee_bps"), slippage_bps=args.get("slippage_bps"),
             purge=args.get("purge") or None, embargo=args.get("embargo") or None,
+            indicators=args.get("indicators") or None,
         )
     except BacktestError as exc:
         raise ToolError(str(exc)) from exc
     d = res.as_dict()
     d["periods"] = d["periods"][:200]
+    # The summary rows stay whole, because there is one per indicator. The per-date
+    # rows are the long part and a caller that wants them has `report`.
+    d["indicator_periods"] = d["indicator_periods"][:200]
     return d
 
 

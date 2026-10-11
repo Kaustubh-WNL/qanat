@@ -398,6 +398,7 @@ def cmd_backtest(args) -> int:
             allocation=_allocation(args.allocation),
             fee_bps=args.fee_bps, slippage_bps=args.slippage_bps,
             purge=args.purge, embargo=args.embargo,
+            indicators=args.indicator or None,
             on_step=None if args.quiet else
             (lambda stop, n: print(f"  {c('·', D)} {stop[:19]}  {n:>3} holdings")),
         )
@@ -486,8 +487,40 @@ def cmd_backtest(args) -> int:
               f"annualised at {t['periods_per_year']:.0f}/yr{X}")
     if t.get("max_drawdown") is not None:
         print(f"    max drawdown     {_money(t['max_drawdown'])}  {D}worst fall from a high{X}")
+    _print_indicators(res.indicator_summary)
     print(f"\n  {D}qanat report {res.run_id}   the periods, one by one{X}\n")
     return 0 if not res.failures else 1
+
+
+def _print_indicators(rows: list[dict]) -> None:
+    """The per-indicator block. A basket says what the top of a ranking paid; these
+    say whether the ranking ordered anything, and how far apart its ends were."""
+    if not rows:
+        return
+    print(f"\n  {c('indicators', B)}  {D}the ranking itself, not the basket{X}\n")
+    wide = max(len(r["indicator"]) for r in rows)
+    wide = min(max(wide, 12), 44) + 2
+    print(f"    {'':<{wide}}{'IC':>7}{'t':>7}{'hit':>7}{'spread':>9}{'turn':>7}{'n':>6}")
+    def cell(row, key, fmt, width, pct=False):
+        v = row.get(key)
+        if v is None:
+            return format("--", f">{width}")
+        return format(v * 100 if pct else v, fmt) + ("%" if pct else "")
+
+    for r in rows:
+        name = r["indicator"]
+        name = name if len(name) <= wide - 2 else "…" + name[-(wide - 3):]
+        ic = r.get("ic_mean")
+        print(f"    {name:<{wide}}"
+              f"{c(cell(r, 'ic_mean', '7.3f', 7), G if (ic or 0) > 0 else R_)}"
+              f"{cell(r, 'ic_t', '7.2f', 7)}"
+              f"{cell(r, 'ic_hit', '6.0f', 7, pct=True)}"
+              f"{cell(r, 'spread_mean', '8.2f', 9, pct=True)}"
+              f"{cell(r, 'autocorr_mean', '7.2f', 7)}"
+              f"{r['names_median']:>6}")
+    print(f"\n    {D}IC is the rank correlation with the next period's return, per date, averaged.")
+    print("    t is that mean against its own scatter. hit is the share of dates it was positive.")
+    print(f"    spread is the top group minus the bottom. turn is how much the ranking stays put.{X}")
 
 
 def cmd_backtests(args) -> int:
@@ -539,6 +572,7 @@ def cmd_report(args) -> int:
         print(f"  {p_['as_of'][:19]:<21} {p_['priced_from'][:10]} → {p_['priced_to'][:10]}   "
               f"{p_['holdings']:>5} {_money(p_['gross']):>9} {_money(-cost):>9} "
               f"{c(_money(p_['net']), G if p_['net'] > 0 else R_):>9}")
+    _print_indicators(report.get("indicators", []))
     if t:
         flat = t.get("flat_periods", 0)
         held = f", {flat} of them flat" if flat else ""
@@ -762,6 +796,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="slippage on turnover, in basis points")
     bt.add_argument("--purge", help="hold rows back this long before a step may read them, e.g. 1d")
     bt.add_argument("--embargo", help="wait this long after the as-of date before a return counts")
+    bt.add_argument("--indicator", action="append", metavar="STAGE.TABLE:COLUMN",
+                    help="also score this column on its own: rank correlation with the return "
+                         "that followed, and the top-minus-bottom spread. Repeatable")
     bt.add_argument("--json", action="store_true")
     bt.add_argument("--quiet", action="store_true", help="do not print each as-of date")
     bt.add_argument("--force", action="store_true", help="run even if the contract fails")

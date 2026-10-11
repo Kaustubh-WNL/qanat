@@ -39,7 +39,8 @@ SESSIONS = "_qanat_sessions"
 ASKS = "_qanat_asks"
 BT_WEIGHTS = "_qanat_bt_weights"
 BT_PERIODS = "_qanat_bt_periods"
-META = (RUNS, EVENTS, STATE, BACKTESTS, BT_WEIGHTS, BT_PERIODS, SESSIONS, ASKS)
+BT_INDICATORS = "_qanat_bt_indicators"
+META = (RUNS, EVENTS, STATE, BACKTESTS, BT_WEIGHTS, BT_PERIODS, BT_INDICATORS, SESSIONS, ASKS)
 
 #: Schema holding the as-of views a replay reads through. Named, not `asof`,
 #: because DuckDB reserves that word for ASOF JOIN.
@@ -357,6 +358,19 @@ class Store:
                     fees        DOUBLE,
                     slippage    DOUBLE,
                     net         DOUBLE
+                )""")
+            # One row per indicator per closed period. It is its own table rather
+            # than columns on BT_PERIODS because a run may evaluate several
+            # indicators and a period is one row, not one per indicator.
+            self.con.execute(f"""
+                CREATE TABLE IF NOT EXISTS {BT_INDICATORS} (
+                    run_id    BIGINT,
+                    as_of     TIMESTAMP,
+                    indicator VARCHAR,
+                    n         BIGINT,
+                    ic        DOUBLE,
+                    spread    DOUBLE,
+                    autocorr  DOUBLE
                 )""")
             # No DEFAULT: when the store is an attached Postgres, DuckDB refuses a
             # DEFAULT in ALTER TABLE. Rows written since carry an explicit value,
@@ -992,6 +1006,23 @@ class Store:
     def bt_periods(self, run_id: int) -> list[dict[str, Any]]:
         df = self.rcon.execute(
             f"SELECT * FROM {BT_PERIODS} WHERE run_id = ? ORDER BY as_of", [run_id]
+        ).df()
+        return _records(df)
+
+    def save_bt_indicator(self, run_id: int, row: Any) -> None:
+        """What one indicator scored over one period: the rank correlation with the
+        return that followed, the top-minus-bottom spread, and how much the ranking
+        moved since the date before. Written as the period closes, like the period
+        itself."""
+        with self._lock:
+            self.con.execute(
+                f"INSERT INTO {BT_INDICATORS} VALUES (?, CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?)",
+                [run_id, row.as_of, row.indicator, row.n, row.ic, row.spread, row.autocorr],
+            )
+
+    def bt_indicators(self, run_id: int) -> list[dict[str, Any]]:
+        df = self.rcon.execute(
+            f"SELECT * FROM {BT_INDICATORS} WHERE run_id = ? ORDER BY indicator, as_of", [run_id]
         ).df()
         return _records(df)
 

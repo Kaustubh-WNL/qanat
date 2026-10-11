@@ -1059,3 +1059,146 @@ def test_the_verdict_explains_itself():
     assert v["trials"] == 12
     assert "12 trials" in v["note"] and "0.05" in v["note"]
     assert v["required"] is not None and v["t"] is not None
+
+
+# ----------------------------------------------------------------- indicators
+#  A basket answers what the top of a ranking paid. These answer whether the
+#  ranking ordered anything at all. The scorer is tested on a price frame built
+#  here, because a step cannot be made to order the future from inside a replay:
+#  the as-of views cut its input at the as-of date, which is the guard doing its
+#  job. So correctness is proved against known returns, and the replay is checked
+#  for the things only it can get wrong.
+
+
+def _two_day_prices(returns: list[float]) -> pd.DataFrame:
+    """Two priced days, and the return each symbol earns between them."""
+    syms = [f"S{i}" for i in range(len(returns))]
+    return pd.DataFrame(
+        [[100.0] * len(syms), [100.0 * (1.0 + r) for r in returns]],
+        index=pd.to_datetime(["2026-01-05", "2026-01-15"]), columns=syms,
+    )
+
+
+def _scorer(tmp_path: Path, groups: int = 5):
+    """A project object, for the backtest block the scorer reads."""
+    write_project(tmp_path, "demo")
+    project, _ = load(tmp_path)
+    project.backtest.groups = groups
+    return project
+
+
+def test_a_ranking_that_orders_the_returns_scores_one(tmp_path: Path):
+    from qanat.backtest import score_indicator
+
+    project = _scorer(tmp_path)
+    rets = [i / 100.0 for i in range(10)]
+    prices = _two_day_prices(rets)
+    values = pd.Series(rets, index=prices.columns)       # same order as the returns
+    row, notes = score_indicator(prices, values, None, "features.x:y",
+                                 "2026-01-01", "2026-01-11", project)
+    assert row is not None, notes
+    assert row.n == 10
+    assert row.ic == pytest.approx(1.0)
+    # 10 names in 5 groups is two per end: (0.09 + 0.08)/2 against (0.01 + 0.00)/2
+    assert row.spread == pytest.approx(0.08)
+    assert row.autocorr is None                          # nothing to compare with yet
+
+
+def test_the_same_ranking_reversed_scores_minus_one(tmp_path: Path):
+    from qanat.backtest import score_indicator
+
+    project = _scorer(tmp_path)
+    rets = [i / 100.0 for i in range(10)]
+    prices = _two_day_prices(rets)
+    values = pd.Series([-r for r in rets], index=prices.columns)
+    row, _ = score_indicator(prices, values, None, "features.x:y",
+                             "2026-01-01", "2026-01-11", project)
+    assert row.ic == pytest.approx(-1.0)
+    assert row.spread == pytest.approx(-0.08)
+
+
+def test_autocorrelation_is_the_ranking_against_the_date_before(tmp_path: Path):
+    from qanat.backtest import score_indicator
+
+    project = _scorer(tmp_path)
+    rets = [i / 100.0 for i in range(10)]
+    prices = _two_day_prices(rets)
+    values = pd.Series(rets, index=prices.columns)
+    same, _ = score_indicator(prices, values, values.copy(), "features.x:y",
+                              "2026-01-01", "2026-01-11", project)
+    flipped, _ = score_indicator(prices, values, -values, "features.x:y",
+                                 "2026-01-01", "2026-01-11", project)
+    assert same.autocorr == pytest.approx(1.0)           # the ranking did not move
+    assert flipped.autocorr == pytest.approx(-1.0)       # it turned over completely
+
+
+def test_a_ranking_with_no_relationship_scores_near_zero(tmp_path: Path):
+    from qanat.backtest import score_indicator
+
+    project = _scorer(tmp_path)
+    prices = _two_day_prices([0.01] * 10)                # every name earns the same
+    values = pd.Series(range(10), index=prices.columns, dtype=float)
+    row, _ = score_indicator(prices, values, None, "features.x:y",
+                             "2026-01-01", "2026-01-11", project)
+    # Every return is equal, so there is no order to be right about and no
+    # correlation to report. A zero here would read as "measured, found nothing".
+    assert row.ic is None
+    assert row.spread == pytest.approx(0.0)
+
+
+def test_too_few_names_for_the_groups_reports_no_spread(tmp_path: Path):
+    from qanat.backtest import score_indicator
+
+    project = _scorer(tmp_path, groups=5)
+    rets = [i / 100.0 for i in range(6)]
+    prices = _two_day_prices(rets)
+    values = pd.Series(rets, index=prices.columns)
+    row, notes = score_indicator(prices, values, None, "features.x:y",
+                                 "2026-01-01", "2026-01-11", project)
+    assert row.ic == pytest.approx(1.0)                  # the IC still stands
+    assert row.spread is None
+    assert any("groups" in n for n in notes)
+
+
+def test_an_indicator_is_scored_on_the_periods_own_price_days(tmp_path: Path):
+    """The IC and the basket read the same two days. Drifting apart would measure
+    the indicator over a window the period never held."""
+    store, project, root = _ready(tmp_path)
+    res = run_backtest(store, project, root, **_window(store),
+                       indicators=["features.momentum:momentum"])
+    assert res.indicators, "the scaffold's momentum column should have been scored"
+    assert {r.as_of for r in res.indicators} <= {p.as_of for p in res.periods}
+    assert all(-1.0 <= r.ic <= 1.0 for r in res.indicators if r.ic is not None)
+
+
+def test_indicator_rows_are_saved_and_summarised(tmp_path: Path):
+    store, project, root = _ready(tmp_path)
+    res = run_backtest(store, project, root, **_window(store),
+                       indicators=["features.momentum:momentum", "features.risk:vol_annual"])
+    assert {s["indicator"] for s in res.indicator_summary} == {
+        "features.momentum:momentum", "features.risk:vol_annual"}
+    saved = store.bt_indicators(res.run_id)
+    assert len(saved) == len(res.indicators)
+    assert all(s["periods"] > 0 for s in res.indicator_summary)
+
+
+def test_a_replay_asked_for_nothing_scores_nothing(tmp_path: Path):
+    store, project, root = _ready(tmp_path)
+    res = run_backtest(store, project, root, **_window(store))
+    assert res.indicators == []
+    assert res.indicator_summary == []
+
+
+def test_an_unknown_indicator_table_is_refused_before_the_replay(tmp_path: Path):
+    store, project, root = _ready(tmp_path)
+    with pytest.raises(BacktestError) as exc:
+        run_backtest(store, project, root, **_window(store),
+                     indicators=["features.nope:score"])
+    assert "not in the store" in str(exc.value)
+
+
+def test_an_indicator_without_a_column_is_refused(tmp_path: Path):
+    store, project, root = _ready(tmp_path)
+    with pytest.raises(BacktestError) as exc:
+        run_backtest(store, project, root, **_window(store), indicators=["features.momentum"])
+    assert "stage.table:column" in str(exc.value)

@@ -67,6 +67,30 @@ class Period:
 
 
 @dataclass
+class IndicatorPeriod:
+    """What one indicator scored over one closed period.
+
+    A basket answers one question about the top of a ranking. These two answer the
+    ranking itself. `ic` is the rank correlation between the indicator and the
+    return that followed, so it says whether the order was right, not whether the
+    top paid. `spread` is the top group's mean return minus the bottom group's, so
+    it says how much the two ends differed. `autocorr` is the rank correlation with
+    the date before, which is the turnover the ranking implies before any basket
+    is built from it.
+
+    All three are measured on the same two price days the period was priced on, so
+    the fill rule in `_price_at` holds for them too.
+    """
+
+    as_of: str
+    indicator: str
+    n: int
+    ic: float | None
+    spread: float | None
+    autocorr: float | None
+
+
+@dataclass
 class BacktestResult:
     run_id: int
     frm: str
@@ -80,6 +104,10 @@ class BacktestResult:
     failures: list[str] = field(default_factory=list)
     conditions: dict[str, Any] = field(default_factory=dict)
     segments: dict[str, Any] = field(default_factory=dict)
+    #: Per indicator per period, when the run was asked to score any.
+    indicators: list[IndicatorPeriod] = field(default_factory=list)
+    #: One row per indicator, summarising those.
+    indicator_summary: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +121,8 @@ class BacktestResult:
             "totals": self.totals,
             "segments": self.segments,
             "periods": [asdict(p) for p in self.periods],
+            "indicators": self.indicator_summary,
+            "indicator_periods": [asdict(r) for r in self.indicators],
             "notes": self.notes,
             "failures": self.failures,
         }
@@ -353,6 +383,118 @@ def score_period(
         gross=gross, turnover=turnover, fees=fees, slippage=slippage,
         net=gross - fees - slippage,
     ), notes
+
+
+def _rank_corr(a: pd.Series, b: pd.Series) -> float | None:
+    """Spearman correlation, or None when there is nothing to correlate.
+
+    Rank rather than value on purpose: an indicator is used as an ordering, and one
+    outlier should not decide whether it worked. Fewer than three names, or a column
+    with one value in it, has no correlation to report -- and a zero there would be
+    read as "no relationship" rather than "nothing was measured".
+    """
+    both = a.dropna().index.intersection(b.dropna().index)
+    if len(both) < 3:
+        return None
+    x, y = a[both], b[both]
+    if x.nunique() < 2 or y.nunique() < 2:
+        return None
+    r = x.rank().corr(y.rank())
+    return None if pd.isna(r) else float(r)
+
+
+def score_indicator(
+    prices: pd.DataFrame, values: pd.Series, before: pd.Series | None,
+    indicator: str, stop: str, next_stop: str, project: Project,
+    costs: Costs | None = None,
+) -> tuple[IndicatorPeriod | None, list[str]]:
+    """Score one indicator over one period, on the period's own price days.
+
+    The return every name earned, not only the ones a basket held. That is the
+    difference between this and `score_period`: a basket is one cut of the ranking
+    and this is the whole of it.
+    """
+    bt = project.backtest
+    c = costs or Costs(bt.fee_bps, bt.slippage_bps, bt.embargo)
+    embargo = parse_duration(c.embargo, "embargo")
+    notes: list[str] = []
+
+    entry = _price_at(prices, pd.Timestamp(stop) + embargo)
+    exit_ = _price_at(prices, pd.Timestamp(next_stop) + embargo)
+    if entry is None or exit_ is None:
+        return None, notes          # score_period already said so for this stop
+    (d0, p0), (d1, p1) = entry, exit_
+    if d0 == d1:
+        return None, notes
+
+    if values is None or values.empty:
+        notes.append(f"{indicator}: no rows on at least one as-of date, not scored there")
+        return None, notes
+
+    priced = p0.dropna().index.intersection(p1.dropna().index)
+    both = values.dropna().index.intersection(priced)
+    if len(both) < 3:
+        notes.append(
+            f"{indicator}: fewer than three names had both the column and a price on both "
+            f"ends of a period, so those periods are not scored"
+        )
+        return None, notes
+    ret = p1[both] / p0[both] - 1.0
+    v = values[both]
+
+    ic = _rank_corr(v, ret)
+    groups = max(2, int(bt.groups))
+    spread: float | None = None
+    if len(both) >= groups * 2:
+        # Cut the ranking into `groups` pieces and take the two ends. qcut is on
+        # ranks rather than values so ties and a skewed column still split evenly.
+        edges = pd.qcut(v.rank(method="first"), groups, labels=False, duplicates="drop")
+        ends = sorted(set(edges.dropna()))
+        if len(ends) >= 2:
+            top = ret[edges == ends[-1]]
+            bottom = ret[edges == ends[0]]
+            if len(top) and len(bottom):
+                spread = float(top.mean() - bottom.mean())
+    else:
+        notes.append(
+            f"{indicator}: {len(both)} names against {groups} groups leaves fewer than two "
+            f"names per end, so no spread is reported. Set `groups:` to "
+            f"{max(2, len(both) // 2)} or lower"
+        )
+
+    return IndicatorPeriod(
+        as_of=str(stop), indicator=indicator, n=len(both), ic=ic, spread=spread,
+        autocorr=_rank_corr(values, before) if before is not None else None,
+    ), notes
+
+
+def indicator_totals(rows: Sequence[IndicatorPeriod]) -> list[dict[str, Any]]:
+    """One summary row per indicator.
+
+    `ic_mean` on its own says nothing about whether it was luck, so the t-statistic
+    of the per-date ICs rides with it, and `ic_hit` says on what share of dates the
+    order was right at all. A high mean carried by two dates out of forty reads
+    differently next to a hit rate of 0.5.
+    """
+    out: list[dict[str, Any]] = []
+    for name in sorted({r.indicator for r in rows}):
+        mine = [r for r in rows if r.indicator == name]
+        ics = [r.ic for r in mine if r.ic is not None]
+        spreads = [r.spread for r in mine if r.spread is not None]
+        acs = [r.autocorr for r in mine if r.autocorr is not None]
+        mean = (sum(ics) / len(ics)) if ics else None
+        sd = _stdev(ics) if len(ics) > 1 else 0.0
+        out.append({
+            "indicator": name,
+            "periods": len(mine),
+            "names_median": int(sorted(r.n for r in mine)[len(mine) // 2]) if mine else 0,
+            "ic_mean": mean,
+            "ic_t": (mean / sd * (len(ics) ** 0.5)) if (mean is not None and sd) else None,
+            "ic_hit": (sum(1 for x in ics if x > 0) / len(ics)) if ics else None,
+            "spread_mean": (sum(spreads) / len(spreads)) if spreads else None,
+            "autocorr_mean": (sum(acs) / len(acs)) if acs else None,
+        })
+    return out
 
 
 #: The two benchmarks qanat computes rather than reads off a symbol. Both hold a
@@ -869,6 +1011,7 @@ def run_backtest(
     slippage_bps: float | None = None,
     purge: str | None = None,
     embargo: str | None = None,
+    indicators: Sequence[str] | None = None,
     on_step: Any = None,
     live: bool = False,
     #  Which conversation asked for this replay, when one did. A run from the
@@ -886,7 +1029,7 @@ def run_backtest(
             store, project, root, frm, to, rebalance=rebalance, seed=seed, decay=decay,
             universe=universe, split=split, step=step, allocation=allocation,
             fee_bps=fee_bps, slippage_bps=slippage_bps, purge=purge, embargo=embargo,
-            on_step=on_step, live=live, session_id=session_id,
+            indicators=indicators, on_step=on_step, live=live, session_id=session_id,
         )
     finally:
         _REPLAY.release()
@@ -909,6 +1052,7 @@ def _run_backtest(
     slippage_bps: float | None = None,
     purge: str | None = None,
     embargo: str | None = None,
+    indicators: Sequence[str] | None = None,
     on_step: Any = None,
     live: bool = False,
     session_id: str = "",
@@ -1022,6 +1166,22 @@ def _run_backtest(
     # see the whole history, so it takes its copy first.
     prices = _price_frame(store, project)
 
+    # Which indicators this run scores on their own. The run may override the
+    # file, and an unknown table is refused here rather than per as-of date: the
+    # replay would otherwise fail 400 times with the same message.
+    scored: list[tuple[str, str, str]] = []     # (label, ref, column)
+    for item in (list(indicators) if indicators is not None else list(bt.indicators)):
+        ref, _, col = str(item).partition(":")
+        if not col:
+            raise BacktestError(
+                f"indicator {item!r} needs a column: write it as stage.table:column"
+            )
+        if not store.exists(ref):
+            raise BacktestError(
+                f"indicator table '{ref}' is not in the store yet. Run the pipeline first"
+            )
+        scored.append((f"{ref}:{col}", ref, col))
+
     # A table with no recognised time column is not filtered by the as-of views and
     # is not checked for lookahead either -- `_check_lookahead` returns early when it
     # cannot find a clock. That is the one gap the guard has, so the run says which
@@ -1052,6 +1212,9 @@ def _run_backtest(
                          "no_clock": clockless}
 
     held: dict[str, pd.Series] = {}
+    #: label -> as-of date -> the column as it stood on that date.
+    values: dict[str, dict[str, pd.Series]] = {label: {} for label, _, _ in scored}
+    scored_missing: set[str] = set()
     previous = pd.Series(dtype=float)   # the portfolio the last closed period held
     open_stop: str | None = None        # the stop waiting for a price on its far side
     progress.start(run_id, len(stops), conditions=result.conditions,
@@ -1145,6 +1308,27 @@ def _run_backtest(
                     )
                 books[name] = series
                 single = w
+            # The indicator columns as they stood at this as-of date. The pass above
+            # rewrote them from the rows visible at `cut`, so this is a plain read
+            # of a point-in-time table and not a second filter.
+            for label, ref, col in scored:
+                frame = store.read(ref)
+                lower = {c.lower(): c for c in frame.columns}
+                sym = lower.get(project.backtest.symbol_column.lower()) or lower.get("symbol")
+                if sym is None or col not in frame.columns:
+                    if label not in scored_missing:
+                        result.notes.append(
+                            f"{ref} has no {col!r} column with a symbol beside it, so "
+                            f"{label} was not scored"
+                        )
+                        scored_missing.add(label)
+                    continue
+                date = project.time_columns.get(ref) or lower.get(
+                    project.backtest.date_column.lower()) or lower.get("date")
+                rows = frame.sort_values(date) if date in frame.columns else frame
+                latest = rows.groupby(sym, as_index=False).last()
+                values[label][stop] = latest.set_index(sym)[col].astype(float)
+
             combined = combine(books, share) if len(picked) > 1 else next(iter(books.values()))
             # what was actually held is what gets saved; the per-step rows ride along
             # so the drill-down can still say which step wanted which name
@@ -1178,6 +1362,28 @@ def _run_backtest(
                     store.save_bt_period(run_id, period)
                     previous = smoothed.get(open_stop, pd.Series(dtype=float))
                     progress.period(asdict(period), result.totals, result.segments)
+                # Scored on the period that just closed, because that is when the
+                # return following the as-of date exists. The basket and the
+                # indicator therefore read the same two price days.
+                for label, mine in values.items():
+                    if open_stop not in mine:
+                        continue
+                    earlier = [d for d in stops[:i] if d in mine and d < open_stop]
+                    row, notes = score_indicator(
+                        prices, mine[open_stop],
+                        mine[earlier[-1]] if earlier else None,
+                        label, open_stop, stop, project, costs,
+                    )
+                    # These say something about the indicator rather than about one
+                    # date, so one of each is the whole message. Per date they would
+                    # bury the periods in four hundred copies.
+                    for note in notes:
+                        if note not in result.notes:
+                            result.notes.append(note)
+                    if row is not None:
+                        result.indicators.append(row)
+                        store.save_bt_indicator(run_id, row)
+                result.indicator_summary = indicator_totals(result.indicators)
             open_stop = stop
             if on_step:
                 on_step(stop, len(held[stop]))
