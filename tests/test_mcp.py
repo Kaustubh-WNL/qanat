@@ -268,5 +268,5 @@ def test_the_backtest_tool_scores_an_indicator_when_asked(tmp_path: Path):
     frm, to = str(bars["date"].min().normalize()), str(bars["date"].max().normalize())
     out = _call(s, "backtest", {"from": frm, "to": to, "rebalance": "10d",
                                 "indicators": ["features.momentum:momentum"]})
-    assert [r["indicator"] for r in out["indicators"]] == ["features.momentum:momentum"]
+    assert [r["indicator"] for r in out["indicator_summary"]] == ["features.momentum:momentum"]
     assert out["indicator_periods"], "the per-date rows should come back too"

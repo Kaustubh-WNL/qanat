@@ -41,8 +41,9 @@ scores a column on its own alongside the basket. Repeat the flag for several.
 | `autocorr` | rank correlation with the same column on the previous as-of date |
 | `n` | names that had both a value and a price on both ends of the period |
 
-The summary adds `ic_mean`, `ic_t`, which is that mean against its own scatter, and `ic_hit`, the
-share of dates the correlation was positive. A mean of 0.08 carried by two dates out of forty reads
+The rows come back as `indicator_periods`, and `indicator_summary` holds one row per indicator over
+the whole window: `ic_mean`, `ic_t`, which is that mean against its own scatter, and `ic_hit`, the
+share of dates the correlation was positive. The pair is named the way `periods` and `totals` are. A mean of 0.08 carried by two dates out of forty reads
 differently beside a hit rate of 0.5.
 
 **Why it is not the same question as net.** A basket holds the top few names, so it answers what

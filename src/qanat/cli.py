@@ -572,7 +572,7 @@ def cmd_report(args) -> int:
         print(f"  {p_['as_of'][:19]:<21} {p_['priced_from'][:10]} → {p_['priced_to'][:10]}   "
               f"{p_['holdings']:>5} {_money(p_['gross']):>9} {_money(-cost):>9} "
               f"{c(_money(p_['net']), G if p_['net'] > 0 else R_):>9}")
-    _print_indicators(report.get("indicators", []))
+    _print_indicators(report.get("indicator_summary", []))
     if t:
         flat = t.get("flat_periods", 0)
         held = f", {flat} of them flat" if flat else ""

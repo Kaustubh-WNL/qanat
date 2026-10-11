@@ -104,9 +104,11 @@ class BacktestResult:
     failures: list[str] = field(default_factory=list)
     conditions: dict[str, Any] = field(default_factory=dict)
     segments: dict[str, Any] = field(default_factory=dict)
-    #: Per indicator per period, when the run was asked to score any.
-    indicators: list[IndicatorPeriod] = field(default_factory=list)
-    #: One row per indicator, summarising those.
+    #: Per indicator per period, when the run was asked to score any. Named like
+    #: `periods` beside it, and summarised by `indicator_summary` the way `periods`
+    #: is by `totals`.
+    indicator_periods: list[IndicatorPeriod] = field(default_factory=list)
+    #: One row per indicator, over the whole window.
     indicator_summary: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -121,8 +123,8 @@ class BacktestResult:
             "totals": self.totals,
             "segments": self.segments,
             "periods": [asdict(p) for p in self.periods],
-            "indicators": self.indicator_summary,
-            "indicator_periods": [asdict(r) for r in self.indicators],
+            "indicator_summary": self.indicator_summary,
+            "indicator_periods": [asdict(r) for r in self.indicator_periods],
             "notes": self.notes,
             "failures": self.failures,
         }
@@ -1381,9 +1383,9 @@ def _run_backtest(
                         if note not in result.notes:
                             result.notes.append(note)
                     if row is not None:
-                        result.indicators.append(row)
+                        result.indicator_periods.append(row)
                         store.save_bt_indicator(run_id, row)
-                result.indicator_summary = indicator_totals(result.indicators)
+                result.indicator_summary = indicator_totals(result.indicator_periods)
             open_stop = stop
             if on_step:
                 on_step(stop, len(held[stop]))

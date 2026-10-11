@@ -15,7 +15,13 @@ block, scores a column alongside the basket. Repeat the flag for several.
 
 The summary carries `ic_mean`, `ic_t` and `ic_hit`, the share of dates the correlation was
 positive. `qanat backtest` and `qanat report` print the block, the `backtest` MCP tool takes an
-`indicators` array, and `report` returns both the summary and the per-date rows.
+`indicators` array, and `report` returns both levels under `indicator_summary` and
+`indicator_periods`.
+
+**Nothing existing changes.** Two keys are added to a backtest result and two fields to
+`BacktestResult`, named `indicator_periods` and `indicator_summary` the way `periods` and `totals`
+already are. `_qanat_bt_periods` keeps its ten columns, `Period` keeps its ten fields, and a run
+asked for no indicators returns an empty list for both.
 
 Until now the only way to ask whether an indicator meant anything was to hold the top of it and
 look at the money. That answers one cut of the ranking. A column can order the universe and still

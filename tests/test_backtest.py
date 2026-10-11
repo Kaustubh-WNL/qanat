@@ -1166,9 +1166,9 @@ def test_an_indicator_is_scored_on_the_periods_own_price_days(tmp_path: Path):
     store, project, root = _ready(tmp_path)
     res = run_backtest(store, project, root, **_window(store),
                        indicators=["features.momentum:momentum"])
-    assert res.indicators, "the scaffold's momentum column should have been scored"
-    assert {r.as_of for r in res.indicators} <= {p.as_of for p in res.periods}
-    assert all(-1.0 <= r.ic <= 1.0 for r in res.indicators if r.ic is not None)
+    assert res.indicator_periods, "the scaffold's momentum column should have been scored"
+    assert {r.as_of for r in res.indicator_periods} <= {p.as_of for p in res.periods}
+    assert all(-1.0 <= r.ic <= 1.0 for r in res.indicator_periods if r.ic is not None)
 
 
 def test_indicator_rows_are_saved_and_summarised(tmp_path: Path):
@@ -1178,14 +1178,14 @@ def test_indicator_rows_are_saved_and_summarised(tmp_path: Path):
     assert {s["indicator"] for s in res.indicator_summary} == {
         "features.momentum:momentum", "features.risk:vol_annual"}
     saved = store.bt_indicators(res.run_id)
-    assert len(saved) == len(res.indicators)
+    assert len(saved) == len(res.indicator_periods)
     assert all(s["periods"] > 0 for s in res.indicator_summary)
 
 
 def test_a_replay_asked_for_nothing_scores_nothing(tmp_path: Path):
     store, project, root = _ready(tmp_path)
     res = run_backtest(store, project, root, **_window(store))
-    assert res.indicators == []
+    assert res.indicator_periods == []
     assert res.indicator_summary == []
 
 
