@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 — 2026-10-12
 
 ### An indicator can be scored on its own, not only through a basket
 
@@ -41,6 +41,16 @@ The engine does not record them for you: `record_trial` is still the caller's ca
 
 New table `_qanat_bt_indicators`, one row per indicator per period, created on open like the rest
 of the meta tables. Nothing existing changes shape.
+
+### The description, and the page
+
+`qanat --help`, the package summary and the README all said *an MCP server for quant factor
+processing and backtesting*. They now say **an MCP server that turns filings and prices into
+valuation indicators, and tests each one inside its own industry**. No code behaves differently.
+
+The README was also a release behind: it offered four shelf strategies that 0.3.1 deleted, counted
+31 tools where there are 27, and typed the `normalized` stage as `kind: features`, which `qanat
+check` now refuses. `docs/agents.md` had the three scope counts wrong for the same reason.
 
 
 ## 0.3.1 — 2026-10-11
