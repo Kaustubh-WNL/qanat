@@ -87,7 +87,7 @@ def test_the_meta_tables_are_created(pg: Store):
 
 def test_reads_through_a_second_cursor_find_the_meta_tables(pg: Store):
     """Bug: a fresh cursor starts on DuckDB's default schema, not the attached
-    one, so every read the console makes returned 500."""
+    one, so every read through `rcon` failed."""
     pg.event("info", "test", "hello")
     assert pg.recent_events(), "recent_events found nothing"
     assert pg.recent_runs() == []
@@ -132,8 +132,8 @@ def test_a_source_key_upserts_on_the_server(project):
     assert len(store.read("raw.px")) == 2, "the repeated window landed twice"
 
 
-def test_the_console_can_draw_the_graph(project):
-    """Every 500 the container logged came through here."""
+def test_the_graph_can_be_built_against_postgres(project):
+    """Every failure the container logged came through here."""
     from qanat.graph import build_graph
 
     store, proj, root = project

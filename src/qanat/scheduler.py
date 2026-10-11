@@ -139,8 +139,9 @@ class Scheduler:
 
         Held apart from the job loop above because it is not a job: a job's work
         was decided when somebody wrote it, and this decides its own. It also
-        needs the console's API to be up -- it drives an agent, and the agent
-        talks HTTP -- so it is a no-op unless `serve` handed us a way in.
+        needs the MCP endpoint to be up -- it drives an agent, and the agent
+        reaches the project over HTTP -- so it is a no-op unless `serve` handed us
+        an address.
         """
         cfg = getattr(self.project, "research", None)
         if not cfg or not cfg.enabled or self._research_base is None:
@@ -202,7 +203,7 @@ class Scheduler:
         # Asked before the window, because a project that cannot say which alpha to
         # price is not going to be able to price one when the next date arrives
         # either. This used to be discovered inside `run_backtest`, which raised,
-        # which was logged and swallowed -- on a loop, forever, while the console
+        # which was logged and swallowed -- on a loop, forever, while `status`
         # went on reporting that everything was fine.
         alpha = self.live_alphas()
         if alpha is None:
@@ -286,7 +287,7 @@ class Scheduler:
         cannot kill a running thread, so this frees the slot and closes the run row
         rather than pretending the work stopped -- the thread finishes on its own and
         finds its slot already gone, which is harmless. What it buys is a scheduler
-        that keeps working, and a console that stops showing the job as running.
+        that keeps working, and a run row that stops saying `running` for ever.
         """
         now = time.time()
         with self._lock:
@@ -311,7 +312,7 @@ class Scheduler:
             self._inflight.discard(job_id)
             self._deadline.pop(job_id, None)
         self.store.event("warn", job_id, "cancelled -- the worker was freed")
-        self._close_open_run(job_id, "cancelled", "cancelled from the console")
+        self._close_open_run(job_id, "cancelled", "cancelled")
         return True
 
     def _close_open_run(self, job_id: str, status: str, why: str) -> None:
@@ -326,8 +327,8 @@ class Scheduler:
         """Run a job now, in its own thread, unless it is already running.
 
         `actor` is who asked. It rides into the worker thread because a
-        ContextVar does not cross one, and the console shows it: a job that ran
-        because an agent asked reads differently from one the clock fired.
+        ContextVar does not cross one, and the event log carries it: a job that
+        ran because an agent asked reads differently from one the clock fired.
         """
         with self._lock:
             if job_id in self._inflight:
@@ -381,7 +382,7 @@ class Scheduler:
             self.fire(step.id)
         return woken
 
-    # ---- state for the console ------------------------------------------------
+    # ---- what is scheduled, and what is running right now ----------------------
     def status(self) -> dict[str, dict[str, object]]:
         with self._lock:
             inflight = set(self._inflight)
@@ -394,7 +395,7 @@ class Scheduler:
             }
             for j in self._jobs
         }
-        # a step on no clock still runs by itself, and the console should say so
+        # a step on no clock still runs by itself, and this should say so
         for step in self.project.steps:
             if step.when and step.id not in out:
                 out[step.id] = {"schedule": None, "when": list(step.when),

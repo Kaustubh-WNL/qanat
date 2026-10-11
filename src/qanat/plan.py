@@ -139,7 +139,7 @@ class Plan:
             return out
         # A table with no rows is not out of date, it is empty: nothing has computed
         # it yet, so there is no old answer to distrust. Filtering here rather than
-        # at each caller is what keeps the console and the agent from disagreeing.
+        # at each caller is what keeps the CLI and the agent from disagreeing.
         return {ref for ref in out if (store.table_info(ref) or _NoRows).rows}
 
     @property

@@ -6,8 +6,8 @@ local file; point it at a Postgres DSN and DuckDB attaches that server and the
 tables are created there instead. The SQL a step writes is identical either way.
 
 A table lives under `<stage>__<name>`, so the stage a table belongs to is
-readable from its name alone -- in the console, in the DuckDB CLI, and in
-anything else that opens the database.
+readable from its name alone -- over MCP, in the DuckDB CLI, and in anything else
+that opens the database.
 """
 
 from __future__ import annotations
@@ -47,10 +47,10 @@ PIT = "qanat_pit"
 
 #: Who is causing work right now, recorded on every event.
 #:
-#: The console shows this, because a project that changes while you are reading a
-#: result should say who changed it. An agent driving over MCP is the case that
+#: The event log carries it, because a project that changes while you are reading
+#: a result should say who changed it. An agent driving over MCP is the case that
 #: matters: `qanat mcp` sets this once for its whole process, the scheduler sets
-#: it per job, and everything else is a person at the console or the CLI.
+#: it per job, and everything else is a person at the CLI.
 #:
 #: A ContextVar rather than a global: the scheduler runs jobs in worker threads,
 #: and each thread gets its own value instead of racing over one.
@@ -144,9 +144,9 @@ def tables_named(sql: str) -> set[str]:
     """Every `stage.table` a query mentions, ignoring comments and string literals.
 
     `ctx.read` refuses a table the step did not declare, and says why. A `.sql` body
-    could reach the same table anyway, so the arrow the console drew was not where
-    the data came from, `stale()` never marked the consumer, and `check` warned that
-    a table read by two steps "is never read by anything".
+    could reach the same table anyway, so the edge the graph drew was not where the
+    data came from, `stale()` never marked the consumer, and `check` warned that a
+    table read by two steps "is never read by anything".
     """
     return {f"{a}.{b}" for a, b in _TABLE_TOKEN.findall(_SQL_NOISE.sub(" ", sql or ""))}
 
@@ -247,9 +247,10 @@ class Store:
         """A second connection, for readers that must not wait.
 
         A replay holds the writing connection for as long as it takes to walk the
-        window, and the console has to keep drawing while that happens -- otherwise
-        the one moment you most want to watch is the one moment the page goes blank.
-        Each thread gets its own cursor onto the same database.
+        window, and an agent asking what the project holds has to be answerable
+        while that happens -- otherwise the one moment you most want to watch is the
+        one moment every read blocks. Each thread gets its own cursor onto the same
+        database.
 
         It is also the safer place to read from: the as-of views live on the
         writer's search path, so a reader here always sees the real tables.
@@ -289,11 +290,11 @@ class Store:
                     job_id VARCHAR,
                     message VARCHAR
                 )""")
-            # Who caused it. An agent over MCP, the console, or the clock -- the
-            # log is the only place a person can see that their project changed
-            # under them while they were reading something else. Rows written
-            # before this existed read as NULL, and the console leaves those
-            # unattributed rather than guessing.
+            # Who caused it. An agent over MCP, a person at the CLI, or the
+            # clock -- the log is the only place a person can see that their
+            # project changed under them while they were reading something else.
+            # Rows written before this existed read as NULL, and stay
+            # unattributed rather than being guessed at.
             self.con.execute(
                 f"ALTER TABLE {EVENTS} ADD COLUMN IF NOT EXISTS actor VARCHAR"
             )
@@ -361,9 +362,9 @@ class Store:
                     cost_usd    DOUBLE
                 )""")
             #  The conversation itself. The CLI keeps its own transcript and that
-            #  is what `--resume` reads; this is ours, and it is what the console
-            #  can show. Without it a past session is a card -- a summary and a
-            #  count -- and nobody can see what was actually said.
+            #  is what `--resume` reads; this is ours, and it is what can be read
+            #  back later. Without it a past session is a summary and a count, and
+            #  nobody can see what was actually said.
             #
             #  `lines` is the tool log as JSON: what the agent did between the
             #  question and the answer, which is most of what makes a thread worth
@@ -979,8 +980,8 @@ class Store:
         return _records(df)
 
     # ---- sessions ------------------------------------------------------------
-    #  A conversation, and what came of it. The console used to hold exactly one
-    #  question in memory and drop it when the next arrived, so asking twice was
+    #  A conversation, and what came of it. An earlier cut held exactly one
+    #  question in memory and dropped it when the next arrived, so asking twice was
     #  two strangers and nothing an agent worked out survived the answer.
     #
     #  The id is minted here rather than read back from the CLI, and handed to it
@@ -1028,8 +1029,8 @@ class Store:
     def save_ask(self, session_id: str, state: dict[str, Any]) -> int:
         """One question and everything that came of it, kept so it can be re-read.
 
-        Written when the ask finishes, from the same `state()` the console was
-        drawing live -- so the replay shows what the person saw, not a
+        Written when the ask finishes, from the same `state()` the pass was
+        reading live -- so what is re-read later is what actually happened, not a
         reconstruction of it.
         """
         import json as _json

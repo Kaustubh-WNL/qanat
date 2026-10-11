@@ -62,7 +62,7 @@ def _hostname(value: str) -> str:
     if "//" in v:                       # http://host:port -> host:port
         v = v.split("//", 1)[1]
     v = v.split("/", 1)[0]
-    if v.startswith("["):               # [::1]:8420 -> ::1
+    if v.startswith("["):               # [::1]:8421 -> ::1
         end = v.find("]")
         return v[1:end] if end > 0 else v
     head, sep, tail = v.rpartition(":")
@@ -178,11 +178,10 @@ def create_app(
     async def guard(request: Request, call_next):  # type: ignore[no-untyped-def]
         """Refuse a name we do not answer to, and a caller without the token.
 
-        The `Host` check is the same one the console uses and it is here for the
-        same reason: binding to loopback does not stop a page the person is
-        visiting from pointing its own domain at 127.0.0.1 and calling this
-        server believing it is same-origin. CORS never enters into it. The name
-        the browser asked for does, and it arrives in `Host`.
+        Binding to loopback does not stop a page the person is visiting from
+        pointing its own domain at 127.0.0.1 and calling this server believing it
+        is same-origin. CORS never enters into it. The name the browser asked for
+        does, and it arrives in `Host`.
         """
         host = _hostname(request.headers.get("host", "")).lower()
         if host not in allowed:

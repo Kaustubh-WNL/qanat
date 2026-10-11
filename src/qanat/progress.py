@@ -4,14 +4,16 @@ A backtest can run for a while, and until it finishes there is nothing to show -
 the report only exists at the end. This is the in-between: which as-of date the
 replay is on, and which job just finished writing which table.
 
-The console reads it and lights the graph in the order the jobs actually ran, so
-the DAG fills in from left to right as the replay walks it. That is not decoration:
-it is the dependency order, drawn.
+It records the jobs in the order they actually ran, which is the dependency order
+observed rather than inferred from the shape of the graph.
 
-Kept in memory on purpose. The only process that can serve the console *and* run a
-replay is the one holding the store open -- `qanat serve` or `qanat mcp` with the
-console attached -- so there is nothing here that a second process should be able
-to see.
+Nothing reads it yet. `run_backtest` fills it on every replay and `qanat backtest`
+prints its own line as it goes, so the reader this was built for -- a tool that
+answers "what is the replay doing right now" -- is the obvious next use and is not
+written. It is kept because the recording is the hard half and it already works.
+
+Kept in memory on purpose. Only the process holding the store open can run a
+replay, so there is nothing here a second process should be able to see.
 """
 
 from __future__ import annotations
@@ -26,12 +28,12 @@ _STATE: dict[str, Any] = {
     "stop": None,
     "stops_done": 0,
     "stops_total": 0,
-    "seq": 0,        # bumps on every job, so the console can tell "new" from "same"
+    "seq": 0,        # bumps on every job, so a reader can tell "new" from "same"
     "jobs": [],      # the jobs of the current pass, oldest first
     # Every pass, with the jobs it ran. A pass over a small project finishes in
-    # less time than one poll, so reporting only the current one meant the console
-    # never saw most of them -- it drew every fourth iteration and skipped the
-    # rest. Keeping the list lets the drawing show each pass that actually ran.
+    # less time than one poll, so reporting only the current one meant a reader
+    # saw roughly every fourth and missed the rest. Keeping the list means each
+    # pass that actually ran can be accounted for.
     "passes": [],
     "jobs_in_run": [],   # the jobs this replay touches at all
     "periods": [],   # every period closed so far -- the curve, while it is drawn
@@ -52,9 +54,9 @@ def start(run_id: int, stops_total: int, conditions: dict[str, Any] | None = Non
         _STATE["seq"] += 1
 
 
-# How many passes are kept for the console to draw. A replay of a few hundred
-# rebalances is normal; keeping them all costs nothing worth counting, but the cap
-# stops a very long run from growing without limit.
+# How many passes are kept. A replay of a few hundred rebalances is normal;
+# keeping them all costs nothing worth counting, but the cap stops a very long run
+# from growing without limit.
 _KEEP = 600
 
 
@@ -78,8 +80,8 @@ def job(job_id: str, status: str, rows: int, targets: list[str]) -> None:
 
 def period(period_row: dict[str, Any], totals: dict[str, Any],
            segments: dict[str, Any] | None = None) -> None:
-    """One holding period closed. This is the point of scoring as we go: the console
-    gets a new point on the curve now rather than a whole curve much later."""
+    """One holding period closed. This is the point of scoring as we go: a new
+    point on the curve is available now rather than a whole curve much later."""
     with _LOCK:
         _STATE["periods"].append(period_row)
         _STATE["totals"] = dict(totals)

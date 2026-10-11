@@ -43,9 +43,9 @@ class BacktestError(Exception):
     pass
 
 
-#: One replay per store, whoever asks. The API endpoint had a lock of its own, but
+#: One replay per store, whoever asks. An earlier cut locked at the caller, but
 #: the scheduler's live pass called `run_backtest` directly and took nothing -- so
-#: with `backtest.live: true` a console run and a timed pass could overlap. They
+#: with `backtest.live: true` a requested run and a timed pass could overlap. They
 #: share one as-of clock and one set of views, so each kept resetting the other:
 #: both came back with zero periods, no exception and no recorded failure.
 _REPLAY = threading.Lock()
@@ -546,9 +546,8 @@ def per_year(rebalance: str) -> float:
 
     A period here is a rebalance, not a day, so the 252 everyone reaches for is
     quietly wrong for anything but a daily strategy -- it would call a weekly
-    strategy five times more volatile than it is. The console works this out the
-    same way, from the same string, so the Sharpe drawn on the page and the one
-    written into the run agree.
+    strategy five times more volatile than it is. Every caller works it out through
+    this one function, from the same string, so there is one answer and not two.
     """
     m = re.match(r"^(\d+)\s*([a-z]+)$", str(rebalance or "1d").strip().lower())
     if not m:
@@ -560,7 +559,7 @@ def per_year(rebalance: str) -> float:
 def totals_of(periods: list[Period], rebalance: str = "",
               bench: list[float] | None = None) -> dict[str, Any]:
     """The run so far, from the periods closed so far. Valid mid-replay as well as
-    at the end -- which is what lets the console show a number while it waits."""
+    at the end -- which is what lets a long replay report a number while it runs."""
     if not periods:
         return {"periods": 0}
     net = [p.net for p in periods]
@@ -770,8 +769,8 @@ def score(
 # project declares them, joined by "+". A single alpha has no "+" in it, so every
 # run recorded before this existed still reads back the same way.
 def _asked_for(alpha: str | Sequence[str] | None) -> list[str]:
-    """One name, several names, or one string holding several. The console and the
-    agent both end up sending text, so commas have to mean what they look like."""
+    """One name, several names, or one string holding several. The CLI and the agent
+    both end up sending text, so commas have to mean what they look like."""
     if alpha is None:
         return []
     if isinstance(alpha, str):
@@ -998,8 +997,8 @@ def _run_backtest(
     # turnover becomes profit and the run lands in the strategy book looking like
     # a discovery: -9999 bps once put +1938% into it with nothing marking it.
     #
-    # This used to be a `ge=0` on the console's request model, which meant it held
-    # for exactly one caller. It is here so it holds for all of them.
+    # This used to be a validator on one caller's request model, which meant it
+    # held for exactly that caller. It is here so it holds for all of them.
     for name, value in (("fee_bps", fee_bps), ("slippage_bps", slippage_bps)):
         if value is not None and float(value) < 0:
             raise BacktestError(

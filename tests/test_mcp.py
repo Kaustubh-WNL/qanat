@@ -1,4 +1,4 @@
-"""The agent's door. Parity with the console is the thing being tested."""
+"""The agent's door. Parity with the engine underneath is the thing being tested."""
 
 from pathlib import Path
 
@@ -171,9 +171,9 @@ def test_lineage_knows_what_breaks_the_portfolio(tmp_path: Path):
 def test_check_is_not_cli_only(tmp_path: Path):
     """Parity: the tool answers exactly what the contract check answers.
 
-    This used to compare MCP against the console's `/api/check`. There is one
-    door now, so the thing worth comparing against is the function underneath --
-    which is what the API was calling too.
+    This used to compare MCP against a second HTTP surface. There is one door
+    now, so the thing worth comparing against is the function underneath -- which
+    is what that surface was calling too.
     """
     from qanat.project import validate
 
@@ -230,8 +230,8 @@ def test_the_picture_and_the_agent_agree_about_what_is_stale(tmp_path: Path):
     """Two readers of one engine. If they can disagree about which tables stopped
     being current, one of them is lying to somebody.
 
-    `build_graph` is what `qanat graph` draws from. It used to be reached through
-    the console's `/api/graph`; the comparison is the same one either way.
+    `build_graph` is what `qanat graph` draws from, and what `lineage` answers
+    out of; the comparison is the same one either way.
     """
     from qanat.graph import build_graph
 

@@ -275,9 +275,10 @@ FILES = {
 }
 
 
-#: What `--demo` adds to the starter project. Four alphas, so the console opens on
-#: a book rather than a single card, and so the graph on the README is the graph
-#: you actually get. Every one is an ordinary step reading an ordinary table.
+#: What `--demo` adds to the starter project. Four alphas, so the first question
+#: lands on a book rather than a single result, and so the graph on the README is
+#: the graph you actually get. Every one is an ordinary step reading an ordinary
+#: table.
 DEMO_ALPHAS = ("momentum", "reversal", "low_vol", "neutral_momentum")
 
 

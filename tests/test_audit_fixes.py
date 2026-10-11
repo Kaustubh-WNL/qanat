@@ -89,9 +89,9 @@ def test_u01_a_negative_cost_is_refused(tmp_path):
     """A negative commission pays you to trade, so turnover becomes profit: -9999
     bps put +1938% into the strategy book with nothing marking it.
 
-    The guard used to be a `ge=0` on the console's request model, so it held for
-    one caller. It is in the engine now, which is why this test reaches for the
-    engine rather than for a web framework.
+    The guard used to be a validator on one caller's request model, so it held
+    for exactly that caller. It is in the engine now, which is why this test
+    reaches for the engine directly.
     """
     from qanat.backtest import BacktestError, run_backtest
     from qanat.project import load
@@ -343,8 +343,8 @@ def test_g04_a_var_with_no_option_behind_it_is_refused(tmp_path: Path):
 
 
 def test_f02_a_script_outside_the_project_is_refused(tmp_path: Path):
-    """A step runs the file it names, and `../` was accepted -- so the console could
-    write a .py file anywhere and then execute it."""
+    """A step runs the file it names, and `../` was accepted -- so a caller could
+    write a .py file anywhere and then have qanat execute it."""
     from qanat.project import validate
 
     p, root = _project(tmp_path, "", {})
@@ -356,8 +356,8 @@ def test_f02_a_script_outside_the_project_is_refused(tmp_path: Path):
 
 def test_f07_a_rejected_edit_leaves_the_project_alone(tmp_path: Path):
     """The edit was applied and validated afterwards, so a rejected one stayed in
-    memory: the console then reported errors about a step that is not in the file,
-    and every later edit failed against it until the server was restarted."""
+    memory: every later read then reported errors about a step that is not in the
+    file, and every later edit failed against it until the process was restarted."""
     from qanat.editor import EditorError, save_step
     from qanat.project import validate
 
@@ -392,7 +392,7 @@ def test_g03_a_step_whose_upstream_failed_is_skipped(tmp_path: Path):
 # ------------------------------------------------- the last nine, in 0.1.3
 def test_g05_a_sql_step_cannot_read_a_table_it_did_not_declare(tmp_path: Path):
     """`ctx.read` refuses an undeclared table and says why. A `.sql` body reached the
-    same table anyway, so the console drew the wrong arrow, `check` warned that a
+    same table anyway, so the graph drew the wrong edge, `check` warned that a
     table two steps read "is never read by anything", and `stale()` never marked the
     consumer -- it stayed a generation behind for ever, reporting ok."""
     from qanat.project import validate

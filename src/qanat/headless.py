@@ -1,8 +1,7 @@
 """Running the agent CLI the person already has, headless.
 
-The console used this for its Ask box and the console is gone. What is left is
-the unattended pass in `research.py`, which drives an installed CLI to try to
-break a strategy overnight and records every attempt.
+The only caller is the unattended pass in `research.py`, which drives an installed
+CLI to try to break a strategy overnight and records every attempt.
 
 The module is called `headless` and not `agent` because the filename was making
 a claim. Qanat is an MCP server. It does not ship an agent, and a file called
@@ -32,13 +31,13 @@ from typing import Any
 #:
 #: `support` is what this file can actually do with one, and it is not a marketing
 #: field. A list that offers a choice which quietly returns nothing is worse than a
-#: list of one, so the console shows this and says so.
+#: list of one, so an entry that cannot be driven does not get one.
 #:
 #: **Why this is one entry.** `cursor-agent` was here and did not work. It was
 #: given only `--print`, whose default format is plain text, while the parse loop
 #: below reads line-delimited JSON -- so every answer was dropped on the floor and
-#: the console showed a finished question with nothing in it. It also never got the
-#: tool fence, which is Claude-only flags, so it ran unrestricted.
+#: a pass reported itself finished holding nothing. It also never got the tool
+#: fence, which is Claude-only flags, so it ran unrestricted.
 #:
 #: Fixing the format alone would not have been enough: `cursor-agent` refuses to
 #: start in a directory until Workspace Trust has been granted interactively, which
@@ -51,24 +50,6 @@ from typing import Any
 CLIS = (
     {"bin": "claude", "label": "Claude Code", "support": "full", "note": ""},
 )
-
-
-def list_clis(prefer: str = "") -> list[dict[str, Any]]:
-    """Every CLI we know about, whether it is installed, and which one would run.
-
-    The console draws from this rather than from `find_cli`, so a person with two
-    installed can see both and pick, and a person with none can see the names to
-    go and install.
-    """
-    out: list[dict[str, Any]] = []
-    for cli in CLIS:
-        path = shutil.which(cli["bin"])
-        out.append({**cli, "found": bool(path), "path": path or "", "active": False})
-    chosen = find_cli(prefer)
-    if chosen:
-        for row in out:
-            row["active"] = row["bin"] == chosen["bin"]
-    return out
 
 
 def find_cli(prefer: str = "") -> dict[str, str] | None:
@@ -115,8 +96,8 @@ def _mcp_config_file(base: str) -> str:
 def _brief(question: str, carried: str = "") -> str:
     """What the agent is told. The tools come from MCP, so they are not listed.
 
-    The old brief spelled out a dozen curl endpoints because the console's HTTP
-    API was the only door. MCP hands the agent its own tool list with schemas, so
+    An older brief spelled out a dozen curl endpoints, from back when an HTTP API
+    was the only door. MCP hands the agent its own tool list with schemas, so
     repeating them here would be a second copy to keep in step with the first.
 
     What is left is what MCP cannot say: what this project is, what the pass is
@@ -173,7 +154,7 @@ class Ask:
     turns: int = 0
     usage: dict[str, Any] = field(default_factory=dict)
     #: The running CLI, so the person can change their mind. Not in `state()`:
-    #: a Popen is not something the console needs to know about.
+    #: a Popen is not something a caller reading the state needs to know about.
     proc: Any = None
     stopped: bool = False
 
@@ -228,36 +209,6 @@ def _describe(name: str, args: dict[str, Any]) -> tuple[str, str]:
     if name == "Bash":
         return ("run", cmd[:70])
     return ("run", name)
-
-
-def snapshot(graph: dict[str, Any]) -> dict[str, Any]:
-    """Enough of the project to say what changed after the agent has been in it."""
-    return {
-        "rows": {t["ref"]: t.get("rows") or 0 for t in graph.get("tables") or []},
-        "jobs": {j["id"]: json.dumps(j.get("options") or {}, sort_keys=True)
-                 for j in graph.get("jobs") or []},
-    }
-
-
-def diff(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
-    """What the agent actually changed, in the project's own terms.
-
-    The tool calls above say what it did; this says what came of it. A person
-    watching wants the second one -- a row count that moved, a step that appeared.
-    """
-    out: list[str] = []
-    for job in sorted(set(after["jobs"]) - set(before["jobs"])):
-        out.append(f"new step {job}")
-    for job in sorted(set(before["jobs"]) & set(after["jobs"])):
-        if before["jobs"][job] != after["jobs"][job]:
-            out.append(f"{job} settings changed")
-    for ref in sorted(set(after["rows"]) - set(before["rows"])):
-        out.append(f"new table {ref} · {after['rows'][ref]:,} rows")
-    for ref in sorted(set(before["rows"]) & set(after["rows"])):
-        was, now = before["rows"][ref], after["rows"][ref]
-        if was != now:
-            out.append(f"{ref} · {was:,} → {now:,} rows")
-    return out
 
 
 def carry(summary: str) -> str:
@@ -417,7 +368,7 @@ def run(ask: Ask, root: Path, base: str, timeout: float = 180.0,
                     ask.model = str(ev["model"])
                 continue
             # The reply as it is being written. `result` at the end is the same
-            # text, complete -- this is only so the console has something to show
+            # text, complete -- this is only so `ask.partial` has something in it
             # before then.
             if ev.get("type") == "stream_event":
                 se = ev.get("event") or {}
@@ -462,5 +413,5 @@ def run(ask: Ask, root: Path, base: str, timeout: float = 180.0,
                 ask.error = (proc.stderr.read() if proc.stderr else "").strip()[:400] or \
                             f"{ask.cli} exited {proc.returncode}"
             _say(ask, "done", "finished")
-        # Not `done` yet: the caller still has to work out what changed, and the
-        # console stops polling the moment this flips.
+        # Not `done` yet: the caller still has to work out what changed, and
+        # anything watching treats this flipping as the end of the ask.

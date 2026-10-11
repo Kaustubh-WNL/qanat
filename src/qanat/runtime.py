@@ -1,9 +1,8 @@
 """What one running process holds: the store, the project, and the scheduler.
 
-This used to live in `api.py`, next to the HTTP surface the console drew. The
-console is gone and so is that surface, but the thing itself is still needed --
-by the scheduler, and by the unattended pass in `research.py` -- so it lives here
-on its own rather than inside a transport.
+It lives on its own rather than inside a transport, because more than one thing
+needs it: `qanat serve` builds it, the scheduler runs against it, and the
+unattended pass in `research.py` reads it.
 """
 
 from __future__ import annotations

@@ -84,28 +84,28 @@ between weights and pnl.
 | two threads writing `qanat.yaml` | F-06: 167 of 400 reads got a torn file | `tests/` |
 | `sys.exit()` inside a step | F-09: the run row said `running` for ever | `tests/` |
 | a job that never returns | F-13: held its worker until the process died | `tests/` |
-| a rejected edit, then a valid one | F-07: the console stayed broken until restart | `tests/` |
+| a rejected edit, then a valid one | F-07: the project stayed broken until restart | `tests/` |
 
 **Not automated:** the SIGKILL case, and a full disk.
 
-## Driving the console
+## Driving the MCP surface
 
-Needs a browser. Nothing here is caught by a Python test, which is why the console
-findings were the ones that survived longest.
+There is no browser pass any more: the console is gone and MCP is the only door, so
+the whole surface is reachable from a Python test. The rows that used to live here
+were about a page — tab order, focus rings, modals — and they went with it.
+
+What replaced them is a client that is not the test suite. A real agent connected
+at `--scope full` chooses its own order, sends its own arguments, and that is still
+where a schema that lies about a field shows up.
 
 | try | caught |
 | --- | --- |
-| walk the tab order and count the stops | U-02: the graph had none; 15 stops for the whole page |
-| look for a focus ring | U-11: one `:focus` rule, and it removed the outline |
-| fold a panel, then keep tabbing | U-12: every hidden control still in the order |
-| press Escape over a modal | U-10: it closed the panel behind it |
-| pause the server with SIGSTOP | U-03: still read "connected", with stale numbers |
-| kill it, then open a modal | U-04: the modal opened completely blank |
-| submit a form twice | U-17: the error was erased by the next repaint |
-| type a negative number into a cost | U-01: +1938% in the strategy book |
-| read the console log after every click | the `backoff` regression in 0.1.2 |
+| connect at each of the three scopes and count the tools | a tool that answers above its scope |
+| call every write tool with a field the schema does not declare | an argument honoured but undocumented |
+| ask an agent to add an alpha with no prior instruction | a flow that validates and then cannot run |
+| pull the store out from under a live session | a tool that reports success on a closed database |
 
-**Not automated:** all of it. A browser pass is the standing cost of each run.
+**Not automated:** the last two. An agent pass is the standing cost of each run.
 
 ---
 
@@ -113,8 +113,8 @@ findings were the ones that survived longest.
 
 1. `uv run pytest audit/batteries -m audit`. Green means the covered ground holds.
 2. Pick the **not automated** rows above. Those are where the findings are.
-3. Drive the console in a browser. It is the surface with the least automation and
-   it has never come back clean.
+3. Drive the MCP surface with a real agent client, not the suite. It is the
+   surface with the least automation.
 4. Every finding: a case in `tests/test_audit_fixes.py`, named for its id.
 5. Every new discriminator: a suite in `batteries/`.
 6. Every lesson: a row here.

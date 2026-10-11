@@ -241,7 +241,7 @@ def test_demo_wires_the_shelf_into_an_ordinary_project(tmp_path: Path):
         assert (root / step.script).exists(), "the script was not written"
         assert step.universe, "a shelf alpha holds itself to a universe"
 
-    # the graph the console draws is now a book, not one card
+    # the project now holds a book of alphas, not a single one
     assert len({t for _, t in project.alphas}) >= len(DEMO_ALPHAS)
 
 

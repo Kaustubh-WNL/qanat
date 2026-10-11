@@ -1,14 +1,11 @@
 """The pipeline, drawn where you already are.
 
-`qanat serve` paints this graph on a canvas. This paints the same graph on a
-character grid, off the same read model -- `api.build_graph` -- so a table that
-says 41,402 rows here is the count the console shows, not a second opinion.
+`build_graph` below is the read model: the shape of the pipeline as data. This
+draws that same answer on a character grid, so a table that says 41,402 rows here
+is the count `lineage` and `list_tables` report over MCP, not a second opinion.
 
-**The table is the node and the step is the edge**, as on screen, and the only
-thing a node's colour says is which stage it belongs to. Those four colours are
-the ones in `console/dag.js`; they are written out again here because a terminal
-cannot read a stylesheet, and they are the one thing in this file that has to be
-changed in two places at once.
+**The table is the node and the step is the edge**, and the only thing a node's
+colour says is which stage it belongs to.
 
 Columns are layers, not stages. A features stage is allowed to chain -- one step
 reading `features.a` and writing `features.b` -- and drawn a column per stage
@@ -38,7 +35,6 @@ if TYPE_CHECKING:
 
 # ---------------------------------------------------------------- the key
 #: the stage a table belongs to, which is the only thing its colour says.
-#: Kept in step with `console/dag.js` by hand.
 STAGE_INK = {
     "raw": "#a2e65d",
     "features": "#7fc4b4",
@@ -307,7 +303,7 @@ def _rows_text(n: Node) -> str:
 
 
 def model(g: dict[str, Any]) -> Model:
-    """The graph the console draws, laid out in layers instead of pixels."""
+    """The read model from `build_graph`, laid out in layers ready to draw."""
     stages = g.get("stages", [])
     order = {s["id"]: i for i, s in enumerate(stages)}
     weights_stage = next((s["id"] for s in stages if s["kind"] == "weights"), None)
@@ -638,9 +634,8 @@ def _plain(s: str) -> str:
 # --------------------------------------------------------------------- read model
 #
 # The shape of the pipeline as data: stages, tables, jobs and the edges between
-# them. This lived in `api.py` because the console drew it. The console is gone
-# and `qanat graph` still wants the same answer, so it moved here, next to the
-# thing that draws it.
+# them. `qanat graph` draws it and the `lineage` tool answers out of it, so it
+# lives here, next to the thing that draws it.
 
 def _plain(v: Any) -> Any:
     if isinstance(v, float) and math.isnan(v):
@@ -793,9 +788,8 @@ def build_graph(
         "tables": tables,
         "jobs": jobs,
         "edges": [{"from": a, "to": b, "step": s} for a, b, s in graph_edges(project)],
-        # the order jobs actually run in. The console draws the pass in this order
-        # rather than guessing from the shape, so the lights are the run, not a
-        # picture of it
+        # the order jobs actually run in. Reported rather than guessed at from the
+        # shape, so what a reader sees is the run and not a picture of it
         "run_order": [j.id for j in run_order(project)],
         "health": {
             "tables": len(tables),

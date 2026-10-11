@@ -99,8 +99,8 @@ def test_saving_a_step_keeps_the_rest_of_the_file(tmp_path: Path):
 
 
 def test_saving_keeps_every_field_a_job_declares(tmp_path: Path):
-    """A console save rewrites the whole file. Anything the dumper forgets is
-    deleted from the project without anybody asking for it."""
+    """A save rewrites the whole file. Anything the dumper forgets is deleted
+    from the project without anybody asking for it."""
     from qanat.models import Project
     from qanat.project_io import dump_project, project_from_dict
 

@@ -71,8 +71,8 @@ def cmd_init(args) -> int:
 
 
 def _demo_fill(target: Path, alphas: list[str]) -> int:
-    """Run the pipeline, then price each alpha, so the console opens on a book
-    with real numbers in it rather than a graph of empty boxes."""
+    """Run the pipeline, then price each alpha, so the first thing an agent is
+    asked about is a book with real numbers in it rather than empty tables."""
     from qanat.backtest import BacktestError, dates, run_backtest
     from qanat.project import load
     from qanat.runner import run_all
@@ -94,9 +94,9 @@ def _demo_fill(target: Path, alphas: list[str]) -> int:
         if len(stops) > 4:
             to = stops[-3][:10]
         # The book's headline is the out-of-sample number, so a demo without a
-        # split fills the console with sparklines and no figures -- and teaches
-        # the habit of reading the whole-sample number, which is the one that
-        # measures the choosing as much as the alpha.
+        # split has nothing to report it from -- and teaches the habit of reading
+        # the whole-sample number, which is the one that measures the choosing as
+        # much as the alpha.
         stops = dates(frm, to, project.backtest.rebalance)
         split = stops[len(stops) * 2 // 3][:10] if len(stops) > 5 else None
         def price(who, label):
@@ -269,10 +269,10 @@ def cmd_ls(args) -> int:
 
 # ----------------------------------------------------------------------- graph
 def cmd_graph(args) -> int:
-    """The same graph `qanat serve` draws, on a character grid.
+    """The pipeline on a character grid.
 
-    It reads the console's read model rather than the file, so an arrow here is
-    an arrow there, and a row count is a count(*) either way.
+    It reads `build_graph` rather than the file, so an arrow here is the arrow the
+    `lineage` tool reports, and a row count is a count(*) either way.
     """
     import shutil
 
@@ -850,7 +850,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("serve", help="run the scheduler, and serve this project over MCP")
     s.add_argument("--host", default="127.0.0.1")
-    s.add_argument("--port", type=int, default=8420)
+    s.add_argument("--port", type=int, default=8421)
     s.add_argument("--workers", type=int, default=4)
     s.add_argument("--no-schedule", action="store_true", help="serve MCP, run nothing")
     s.add_argument("--scope", choices=list(SCOPES), default="full",

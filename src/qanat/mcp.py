@@ -1,10 +1,10 @@
 """The same engine, addressed by an agent instead of by a person.
 
-`qanat serve` gives the console an HTTP API. `qanat mcp` gives an agent the same
-service layer over MCP on stdio. Neither one holds logic: both call `store`,
-`editor`, `runner`, `plan` and `backtest`, which is the whole point -- if the
-console can do it, an agent can do it, and there is no third place where the
-behaviour could quietly differ.
+`qanat mcp` serves the service layer over MCP on stdio, and `mcp_http` serves the
+same tools over HTTP. Neither one holds logic: both call `store`, `editor`,
+`runner`, `plan` and `backtest`, which is the whole point -- if the CLI can do
+it, an agent can do it, and there is no third place where the behaviour could
+quietly differ.
 
 Six things this tries to be, because an agent needs them and a person does not:
 
@@ -653,8 +653,8 @@ def _use_alpha(s: Session, args: dict) -> Any:
         written = save_step(s.project, s.root, {
             "id": step_id, "from": declared, "to": [target],
             "script": script, "universe": universe, "options": opts,
-            # Dropped on the floor before this: the field exists on `Step`, the
-            # console offers it, and an alpha installed here could not carry it.
+            # Dropped on the floor before this: the field exists on `Step`, and
+            # an alpha installed here could not carry it.
             "rebalance": args.get("rebalance") or None,
             "decay": None if decay is None else int(decay),
         }, create_script=False)
@@ -667,17 +667,6 @@ def _use_alpha(s: Session, args: dict) -> Any:
         "book": [a for a, _ in s.project.alphas],
         "next": "run, then backtest_conditions, then backtest with alpha=" + step_id,
     }
-
-
-# ---- the console -------------------------------------------------------------
-def _free_port(host: str, first: int) -> int:
-    import socket
-
-    for port in range(first, first + 40):
-        with socket.socket() as s:
-            if s.connect_ex((host, port)) != 0:
-                return port
-    raise ToolError(f"no free port between {first} and {first + 40}")
 
 
 # ---- author ------------------------------------------------------------------
@@ -696,8 +685,8 @@ def _free_port(host: str, first: int) -> int:
           "source": {"type": "string", "description": "the script body to write"},
           "universe": {"type": "string"},
           "schedule": {"type": "string"},
-          # Both of these have always been honoured; neither was in the schema, so
-          # an agent had no way to find a field the console shows in a form.
+          # Both of these have always been honoured; neither was in the schema,
+          # so an agent had no way to find out the field existed at all.
           "rebalance": {"type": "string",
                         "description": "how often this alpha wants to decide, e.g. 5d. A backtest "
                                        "uses it unless told otherwise. Only meaningful on a step "
@@ -1009,9 +998,8 @@ def serve_stdio(project_path: str | None = None, scope: str = "full") -> int:
         print(f"qanat mcp: {exc}", file=sys.stderr)
         return 2
 
-    # Everything this process does is the agent doing it. A console served from
-    # here by `open_console` answers on other threads, which start on the "you"
-    # default -- so a person clicking in it is still recorded as a person.
+    # Everything this process does is the agent doing it. Set once, for the whole
+    # process: the scheduler overrides it per job, and the CLI never gets here.
     set_actor("agent")
     try:
         session = Session(project_path)

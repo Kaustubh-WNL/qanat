@@ -2,8 +2,8 @@
 
 Each entry is a whole step: the script, what it needs to read, and the options it
 takes. `use_alpha` writes the script into the project and wires it as the step that
-produces the weights table -- the same edit a person would make in the console, so
-nothing here is a special path.
+produces the weights table -- the same edit a person would make by hand, so nothing
+here is a special path.
 
 They are deliberately plain. Every one of them is a rule you could write on a
 napkin, because the point of the shelf is to have something real to replay on day

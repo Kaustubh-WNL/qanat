@@ -23,6 +23,6 @@ if [ ! -f qanat.yaml ]; then
 fi
 
 HOST="${QANAT_HOST:-127.0.0.1}"
-PORT="${QANAT_PORT:-8420}"
+PORT="${QANAT_PORT:-8421}"
 
 exec qanat serve --host "$HOST" --port "$PORT" --run-now

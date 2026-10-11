@@ -1,9 +1,11 @@
 #!/bin/sh
-# Live ingest demo (~2 minutes): mock feed + the scheduler + scheduled job triggers.
+# Live ingest demo (~2 minutes): mock feed + the scheduler firing jobs on their own
+# `schedule:` lines.
 #
 #   sh scripts/demo-run.sh
 #
-# Open http://127.0.0.1:8420 and watch bars ingest → normalize → features → weights.
+# Watch the scheduler's own log, or point an agent at http://127.0.0.1:8421/mcp and
+# ask what is landing while it runs.
 
 set -eu
 
@@ -12,17 +14,15 @@ cd "$ROOT"
 
 FEED_HOST="${DEMO_FEED_HOST:-127.0.0.1}"
 FEED_PORT="${DEMO_FEED_PORT:-8765}"
-QANAT_PORT="${QANAT_HOST_PORT:-8420}"
+QANAT_PORT="${QANAT_HOST_PORT:-8421}"
 DURATION="${DEMO_DURATION:-120}"
-INTERVAL="${DEMO_INTERVAL:-12}"
 
 FEED_PID=""
 QANAT_PID=""
-TRIGGER_PID=""
 
 cleanup() {
-  kill "$TRIGGER_PID" "$QANAT_PID" "$FEED_PID" 2>/dev/null || true
-  wait "$TRIGGER_PID" "$QANAT_PID" "$FEED_PID" 2>/dev/null || true
+  kill "$QANAT_PID" "$FEED_PID" 2>/dev/null || true
+  wait "$QANAT_PID" "$FEED_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -54,51 +54,27 @@ for job in news normalize momentum risk tone portfolio; do
   uv run --project "$ROOT" qanat run "$job"
 done
 
-echo "demo-run: api → http://127.0.0.1:${QANAT_PORT}/api/docs"
-uv run --project "$ROOT" qanat serve --host 127.0.0.1 --port "$QANAT_PORT" --run-now &
+# Every job in this project carries a `schedule:`, so the scheduler fires the whole
+# pipeline each minute by itself. Nothing here has to poke it: a loop that triggered
+# jobs from outside would be testing the loop rather than the schedule.
+echo "demo-run: mcp → http://127.0.0.1:${QANAT_PORT}/mcp"
+uv run --project "$ROOT" qanat serve --host 127.0.0.1 --port "$QANAT_PORT" --run-now \
+  --log-level info &
 QANAT_PID=$!
 
 for _ in $(seq 1 40); do
-  if curl -sf "http://127.0.0.1:${QANAT_PORT}/api/health" >/dev/null 2>&1; then
+  if curl -sf "http://127.0.0.1:${QANAT_PORT}/health" >/dev/null 2>&1; then
     break
   fi
   sleep 0.25
 done
 
-run_job() {
-  curl -sf -X POST "http://127.0.0.1:${QANAT_PORT}/api/jobs/$1/run" >/dev/null || true
-}
-
-trigger_loop() {
-  end=$(($(date +%s) + DURATION))
-  cycle=0
-  while [ "$(date +%s)" -lt "$end" ]; do
-    cycle=$((cycle + 1))
-    echo "demo-run: live cycle ${cycle} — ingest bars"
-    run_job bars
-    sleep 2
-    run_job normalize
-    sleep 1
-    run_job momentum
-    run_job risk
-    sleep 1
-    if [ $((cycle % 2)) -eq 0 ]; then
-      run_job news
-      run_job tone
-    fi
-    run_job portfolio
-    sleep "$INTERVAL"
-  done
-  echo "demo-run: live cycles finished (${DURATION}s), scheduler still running"
-}
-
-trigger_loop &
-TRIGGER_PID=$!
-
 echo ""
-echo "  Open http://127.0.0.1:${QANAT_PORT}"
-echo "  Live ingest runs for ~${DURATION}s (every ${INTERVAL}s)."
-echo "  Press Ctrl+C to stop the feed and the scheduler."
+echo "  mcp      http://127.0.0.1:${QANAT_PORT}/mcp"
+echo "  Sources and steps fire on their own schedules, about once a minute."
+echo "  Running for ~${DURATION}s. Press Ctrl+C to stop the feed and the scheduler."
 echo ""
 
-wait "$QANAT_PID"
+sleep "$DURATION" &
+wait $! 2>/dev/null || true
+echo "demo-run: ${DURATION}s elapsed, stopping"

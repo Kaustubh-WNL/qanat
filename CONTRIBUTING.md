@@ -11,7 +11,8 @@ uv sync --extra dev
 
 qanat init demo && cd demo
 uv run qanat run
-uv run qanat serve          # console + editor at http://127.0.0.1:8420
+uv run qanat mcp            # serve this project to an agent over stdio
+uv run qanat serve          # scheduler + MCP over HTTP at http://127.0.0.1:8421/mcp
 ```
 
 Or with pip: `pip install -e ".[dev]"`.
@@ -60,9 +61,12 @@ a timestamp. Every one of those was a real bug that the rest of the suite ran st
 | Runner | `src/qanat/runner.py` | Executes sources and steps |
 | Scheduler | `src/qanat/scheduler.py` | Cron + retention cleanup |
 | Store | `src/qanat/store.py` | DuckDB engine; DuckDB file or Postgres via ATTACH |
-| Console API | `src/qanat/api.py` | Graph, editor endpoints, run-now |
-| Console UI | `src/qanat/console/` | Dashboard + pipeline editor |
+| Replay | `src/qanat/backtest.py` | Walks the as-of dates and prices what was held |
+| MCP (stdio) | `src/qanat/mcp.py` | The tool surface, and the three scopes |
+| MCP (HTTP) | `src/qanat/mcp_http.py` | The same tools on `/mcp`, with Host and token checks |
+| CLI | `src/qanat/cli.py` | `init`, `run`, `backtest`, and what starts the servers |
 | Editor logic | `src/qanat/editor.py` | Mutations that write `qanat.yaml` |
+| Graph | `src/qanat/graph.py` | The read model, and the terminal drawing of it |
 | Connectors | `src/qanat/sources/` | Plugin surface: one `fetch()` per connector |
 
 ## Adding a connector

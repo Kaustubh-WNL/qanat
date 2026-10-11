@@ -120,8 +120,8 @@ Finish with two sentences: what it promised, and what it has actually done."""
 class Pass:
     """One unattended pass, and what it cost.
 
-    Held in its own slot rather than the console's, so a question asked by a person
-    while this is running neither kills it nor is killed by it.
+    Held in its own slot on the state, so a question asked by a person while this
+    is running neither kills it nor is killed by it.
     """
 
     def __init__(self, goal: str, targets: list[str]) -> None:
@@ -238,7 +238,7 @@ def start(state: Any, goal: str = "", base: str = "") -> Pass | None:
 
         set_actor("research")
         run_pass(state.store, state.project, state.root,
-                 base or "http://127.0.0.1:8420", pass_, _agent_pref(state))
+                 base or "http://127.0.0.1:8421", pass_, _agent_pref(state))
 
     threading.Thread(target=work, daemon=True).start()
     return pass_

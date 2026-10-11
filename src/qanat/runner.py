@@ -1,7 +1,7 @@
 """Running one job -- a source poll, or a step.
 
 Every run writes a row into `_qanat_runs` before it starts and after it ends, so
-the console is reading history rather than being told a story.
+anything asking what happened is reading history rather than being told a story.
 """
 
 from __future__ import annotations
@@ -263,8 +263,8 @@ def run_step(
         return RunResult(step.id, "failed", 0, msg, tuple(step.writes))
     except BaseException as exc:
         # `sys.exit()` in a script, or Ctrl-C. These are not Exceptions, so they used
-        # to sail past `end_run` and leave the row saying `running` for ever -- the
-        # console then span on that job until somebody noticed. Record, then re-raise.
+        # to sail past `end_run` and leave the row saying `running` for ever, and
+        # every later reader believed it. Record, then re-raise.
         msg = f"{type(exc).__name__}: {exc}"
         store.event("error", step.id, f"interrupted -- {msg}"[:400])
         store.end_run(run_id, "interrupted", 0, msg[:2000])

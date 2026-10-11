@@ -19,11 +19,11 @@ RUN uv sync --frozen --no-dev --no-editable
 
 ENV PATH="/app/.venv/bin:$PATH" \
     QANAT_HOST=0.0.0.0 \
-    QANAT_PORT=8420
+    QANAT_PORT=8421
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 8420
+EXPOSE 8421
 
 ENTRYPOINT ["/entrypoint.sh"]

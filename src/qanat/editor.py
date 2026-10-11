@@ -1,21 +1,16 @@
-"""Project mutations used by the console API."""
+"""Project mutations: one function per edit, each validated before it lands.
+
+The write tools in `mcp` are the callers. Nothing here writes to the store -- an
+edit changes `qanat.yaml` and, for a new step, the script file beside it.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from qanat.models import Project, Source, Stage, Step, Universe
+from qanat.models import Project, Source, Step, Universe
 from qanat.project import validate
-from qanat.project_io import (
-    mutate_stage,
-    project_from_dict,
-    remove_source,
-    remove_stage,
-    remove_step,
-    save_project,
-    upsert_source,
-    upsert_step,
-)
+from qanat.project_io import remove_step, save_project, upsert_source, upsert_step
 
 
 class EditorError(Exception):
@@ -38,27 +33,13 @@ def run(ctx):
 '''
 
 
-def load_mutable(root: Path) -> tuple[Project, Path]:
-    from qanat.project import load
-
-    return load(root)
-
-
-def apply_and_save(root: Path, project: Project) -> list[str]:
-    rep = validate(project, root)
-    if not rep.ok:
-        raise EditorError("; ".join(rep.errors))
-    save_project(project, root)
-    return rep.warnings
-
-
 def _edit(project: Project, root: Path, change) -> list[str]:
     """Apply a change to a copy, and keep it only if the whole project still holds.
 
     Editing in place and validating afterwards meant a rejected edit stayed in
-    memory: the console then reported errors about a step that is not in the file,
-    and every later edit failed against it until the server was restarted. One bad
-    form field took the editor down.
+    memory: every later read then reported errors about a step that is not in the
+    file, and every later edit failed against it until the process was restarted.
+    One bad field took the whole editor down.
     """
     draft = project.model_copy(deep=True)
     change(draft)
@@ -71,49 +52,9 @@ def _edit(project: Project, root: Path, change) -> list[str]:
     return rep.warnings
 
 
-def replace_project(root: Path, raw: dict) -> tuple[Project, list[str]]:
-    project = project_from_dict(raw)
-    warnings = apply_and_save(root, project)
-    return project, warnings
-
-
-def set_store(project: Project, root: Path, store: str) -> list[str]:
-    def change(d: Project) -> None:
-        d.store = store
-    return _edit(project, root, change)
-
-
-def add_stage(
-    project: Project,
-    root: Path,
-    stage_id: str,
-    kind: str = "features",
-    description: str = "",
-    before: str | None = None,
-) -> list[str]:
-    if before is None:
-        weights = project.weights_stage
-        before = weights.id if weights else None
-    stage = Stage(id=stage_id, kind=kind, description=description)
-    return _edit(project, root, lambda d: mutate_stage(d, stage, insert_before=before))
-
-
-def delete_stage(project: Project, root: Path, stage_id: str) -> list[str]:
-    lay = project.stage(stage_id)
-    if lay and lay.kind == "raw":
-        raise EditorError("the raw stage cannot be removed")
-    if lay and lay.kind == "weights":
-        raise EditorError("the weights stage cannot be removed")
-    return _edit(project, root, lambda d: remove_stage(d, stage_id))
-
-
 def save_source(project: Project, root: Path, raw: dict) -> list[str]:
     source = Source.model_validate(raw)
     return _edit(project, root, lambda d: upsert_source(d, source))
-
-
-def delete_source(project: Project, root: Path, source_id: str) -> list[str]:
-    return _edit(project, root, lambda d: remove_source(d, source_id))
 
 
 def save_step(project: Project, root: Path, raw: dict, create_script: bool = True) -> list[str]:
@@ -187,33 +128,8 @@ def save_universe(project: Project, root: Path, raw: dict) -> list[str]:
     return _edit(project, root, change)
 
 
-def delete_universe(project: Project, root: Path, universe_id: str) -> list[str]:
-    used = [st.id for st in project.steps if st.universe == universe_id]
-    if used:
-        raise EditorError(
-            f"universe '{universe_id}' is still held by {', '.join(used)}. "
-            "Point those steps elsewhere first"
-        )
-
-    def change(d: Project) -> None:
-        d.universes = [u for u in d.universes if u.id != universe_id]
-    return _edit(project, root, change)
-
-
 def delete_step(project: Project, root: Path, step_id: str) -> list[str]:
     return _edit(project, root, lambda d: remove_step(d, step_id))
-
-
-def set_retention(project: Project, root: Path, retention: dict[str, str]) -> list[str]:
-    from qanat.retention import parse_duration
-
-    for ref, policy in retention.items():
-        if ref.count(".") != 1:
-            raise EditorError(f"retention key must be stage.table, got {ref!r}")
-        parse_duration(policy)
-    def change(d: Project) -> None:
-        d.retention = dict(retention)
-    return _edit(project, root, change)
 
 
 def set_bar(project: Project, root: Path, raw: dict) -> list[str]:
@@ -240,41 +156,3 @@ def set_bar(project: Project, root: Path, raw: dict) -> list[str]:
         d.backtest.bar = bar
 
     return _edit(project, root, change)
-
-
-def set_agent_cli(project: Project, root: Path, cli: str) -> list[str]:
-    """Name the agent CLI the console should drive, or clear the choice.
-
-    Refuses a name we cannot drive rather than writing it and failing later at the
-    ask box, where the reason would be much harder to see.
-    """
-    from qanat.headless import CLIS
-    from qanat.models import Agent
-
-    known = {c["bin"] for c in CLIS}
-    if cli and cli not in known:
-        raise EditorError(f"unknown agent cli {cli!r} -- known: {', '.join(sorted(known))}")
-
-    def change(d: Project) -> None:
-        current = d.agent or Agent()
-        d.agent = Agent(cli=cli, timeout=current.timeout)
-
-    return _edit(project, root, change)
-
-
-def drop_table(store, project: Project, root: Path, ref: str, *, force: bool = False) -> int:
-    from qanat.plan import plan
-
-    producers = project.producers()
-    pl = plan(project, root, store)
-    orphan = ref in {c.target for c in pl.orphans}
-    if ref in producers and not force:
-        raise EditorError(f"{ref} is still produced by '{producers[ref]}'. Remove the job first")
-    if not orphan and ref not in producers and not force:
-        raise EditorError(f"{ref} is not in the project")
-    rows = store.drop(ref)
-    project.retention.pop(ref, None)
-    if ref in producers:
-        save_project(project, root)
-    store.event("warn", "editor", f"dropped {ref} ({rows:,} rows)")
-    return rows
