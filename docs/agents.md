@@ -1,6 +1,6 @@
 # Notes on the agent surface
 
-The README covers adding qanat to an MCP client and what the 31 tools are. These are the parts
+The README covers adding qanat to an MCP client and what the 27 tools are. These are the parts
 that only matter once you are using them.
 
 ## The agent's surface is wider than the CLI's
@@ -91,8 +91,8 @@ Three scopes, nested. Each one contains the one before it, and `full` is the def
 
 ```bash
 qanat mcp --scope data       #  6 tools
-qanat mcp --scope research   # 19 tools
-qanat mcp                    # 31 tools
+qanat mcp --scope research   # 18 tools
+qanat mcp                    # 27 tools
 ```
 
 | scope | adds | tools |

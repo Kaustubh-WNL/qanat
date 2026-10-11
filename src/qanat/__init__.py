@@ -1,5 +1,5 @@
-"""Qanat: an MCP server that builds indicators from filings and prices, and
-validates each one inside its own industry.
+"""Qanat: an MCP server your agent uses to find which valuation indicators hold in
+an industry, and rank its companies on them, from filings and prices.
 
 A qanat is the underground channel that carried water across the desert for two
 thousand years: it moved the water, it never owned it.
