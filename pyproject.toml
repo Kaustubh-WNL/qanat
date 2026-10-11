@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qanat-fdtl"
-version = "0.4.0"
+version = "0.3.1"
 description = "An MCP server that builds indicators from filings and prices, and validates each one inside its own industry. Point it at any source with a timestamp; connect it to your agent and ask."
 readme = "README.md"
 license = { file = "LICENSE" }

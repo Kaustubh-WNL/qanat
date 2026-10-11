@@ -1,10 +1,13 @@
 # Changelog
 
-## 0.4.0 — 2026-10-11
+## 0.3.1 — 2026-10-11
 
-**Breaking.** The word `alpha` is gone, the shelf is gone, and four tool names changed.
-There are no aliases: registering old and new names doubles five tool definitions, and
-every definition is sent on every request.
+**Breaking, despite the patch number.** Four tools are deleted, two CLI flags are renamed,
+one `qanat.yaml` field is renamed, and a database column is renamed on open. The upgrade
+list is at the end of this section; read it before installing over a project you care about.
+
+There are no deprecation aliases: registering old and new names doubles five tool
+definitions, and every definition is sent on every request.
 
 ### `alpha` is deleted, and nothing replaced it
 
@@ -60,6 +63,28 @@ before this release should change that one line.
 `_qanat_backtests.alpha` is renamed to `step` on open. Databases written before today are
 renamed rather than re-created, so every backtest anyone already ran keeps its row.
 Nothing else persisted changes, and no table is renamed.
+
+The rename is **asked for rather than attempted**. A rename that fails because the column
+is absent looks exactly like one that fails because the database is unwritable, and
+swallowing the second to tolerate the first is how a migration goes quiet. So it reads
+`information_schema` first. There is nothing to run: the first open of this version does it.
+
+### Upgrading
+
+| Was | Is |
+| --- | --- |
+| `alpha_book` | `list_steps(stage: "weights", net: true)` |
+| `list_alphas`, `read_alpha`, `use_alpha` | deleted with the shelf |
+| `qanat alphas` | deleted |
+| `qanat backtest --alpha` | `--step` |
+| `alpha` on the `backtest` and `list_trials` tools | `step` |
+| `alpha:` in the `bar:` block | `significance:` |
+| `live_alphas:` in `qanat.yaml` | `live_steps:` |
+| `Project.alphas`, `.alpha()`, `.alpha_name()` | `.weights_steps`, `.weights_step()`, `.weights_name()` |
+| the `alpha_` step-id prefix | drop it. The stage says it |
+| `kind: features` on your `normalized` stage | `kind: normalized` |
+
+180 tests, 6 skipped, and 13 audit batteries including the leakage one.
 
 ## 0.3.0 — 2026-09-30
 
