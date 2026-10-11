@@ -18,10 +18,10 @@
 An **indicator** is one number per company per date: PER, EV/EBITDA, ROIC, a trailing return. Which
 ones value an industry's companies depends on the industry, because the numbers that describe a
 factory do not describe software. Your agent is what finds the ones that hold, and Qanat is what it
-works through: the agent writes an indicator as a step, Qanat ranks every company on it and prices
-what the top of that ranking would have earned after fees, and each attempt is counted, so fifty
-tries cannot pass as one good idea. Point it at any source that carries a timestamp. Connect it to
-your agent and ask.
+works through: the agent writes an indicator as a step, Qanat computes it for every company on every
+date, ranks them on it, and prices what the top of that ranking would have earned after fees. Each
+attempt is counted, so fifty tries cannot pass as one good idea. Point it at any source that carries
+a timestamp. Connect it to your agent and ask.
 
 ## Install
 
