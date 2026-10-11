@@ -1,4 +1,5 @@
-"""Qanat: an agent-native workflow engine for building and backtesting alphas as DAGs.
+"""Qanat: an MCP server that builds indicators from filings and prices, and
+validates each one inside its own industry.
 
 A qanat is the underground channel that carried water across the desert for two
 thousand years: it moved the water, it never owned it.

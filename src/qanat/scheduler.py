@@ -170,20 +170,20 @@ class Scheduler:
         start_pass(state, "", self._research_base)
         return True
 
-    def live_alphas(self) -> list[str] | None:
-        """Which alphas a live pass prices, or None when nothing can say.
+    def live_steps(self) -> list[str] | None:
+        """Which weights tables a live pass prices, or None when nothing can say.
 
-        One alpha in the project needs no instruction. Several, and the choice is
+        One in the project needs no instruction. Several, and the choice is
         not ours: pricing two together is a third strategy, and picking one of them
         silently would report a number for a portfolio nobody asked to hold.
         """
         bt = self.project.backtest
         if bt is None:
             return None
-        if bt.live_alphas:
-            return list(bt.live_alphas)
-        book = [a for a, _ in self.project.alphas]
-        return [book[0]] if len(book) == 1 else None
+        if bt.live_steps:
+            return list(bt.live_steps)
+        declared = [a for a, _ in self.project.weights_steps]
+        return [declared[0]] if len(declared) == 1 else None
 
     def score_forward(self) -> bool:
         """Run a live pass if the data has reached the next rebalance date.
@@ -200,20 +200,21 @@ class Scheduler:
         with self._lock:
             if _LIVE in self._inflight:
                 return False
-        # Asked before the window, because a project that cannot say which alpha to
+        # Asked before the window, because a project that cannot say which step to
         # price is not going to be able to price one when the next date arrives
         # either. This used to be discovered inside `run_backtest`, which raised,
         # which was logged and swallowed -- on a loop, forever, while `status`
         # went on reporting that everything was fine.
-        alpha = self.live_alphas()
-        if alpha is None:
-            book = [a for a, _ in self.project.alphas]
-            self._live_halt = "no alpha named"
+        step = self.live_steps()
+        if step is None:
+            declared = [a for a, _ in self.project.weights_steps]
+            self._live_halt = "nothing named"
             self.store.event(
                 "error", _LIVE,
-                f"live is on, but this project has {len(book)} alphas and none is named to "
-                f"price: {', '.join(book)}. Set `live_alphas:` in the backtest block to one "
-                f"of them (or several, to hold them as one book). Nothing is being scored "
+                f"live is on, but this project has {len(declared)} weights tables and none is "
+                f"named to price: {', '.join(declared)}. Set `live_steps:` in the backtest "
+                f"block to one "
+                f"of them (or several, to hold them as one basket). Nothing is being scored "
                 f"until you do.",
             )
             return False
@@ -226,13 +227,13 @@ class Scheduler:
             return False
         with self._lock:
             self._inflight.add(_LIVE)
-        threading.Thread(target=self._score, args=(*window, alpha), daemon=True).start()
+        threading.Thread(target=self._score, args=(*window, step), daemon=True).start()
         return True
 
     def note_frontier(self, to: str) -> bool:
         """Write down where the data ended when live scoring began. Once, ever.
 
-        Everything after this date is a period nobody could see when the alpha was
+        Everything after this date is a period nobody could see when the step was
         chosen. Worked out fresh on each pass it would move forward every day, and
         the live segment would collapse back into out of sample.
 
@@ -245,15 +246,15 @@ class Scheduler:
         bt.live_from = to
         save_project(self.project, self.root)
         self.store.event("info", _LIVE, f"live from {to} · periods after it were "
-                                        "not on disk when the alpha was chosen")
+                                        "not on disk when the step was chosen")
         return True
 
-    def _score(self, frm: str, to: str, alpha: list[str]) -> None:
+    def _score(self, frm: str, to: str, step: list[str]) -> None:
         from qanat.backtest import run_backtest
 
         try:
-            self.store.event("info", _LIVE, f"scoring {frm} to {to} · {', '.join(alpha)}")
-            run_backtest(self.store, self.project, self.root, frm, to, alpha=alpha, live=True)
+            self.store.event("info", _LIVE, f"scoring {frm} to {to} · {', '.join(step)}")
+            run_backtest(self.store, self.project, self.root, frm, to, step=step, live=True)
             # Stamped only once a pass has landed. Written before the run, a run that
             # then failed still moved the frontier -- and `note_frontier` writes once
             # and never again, so the date defining out-of-sample was left pointing at

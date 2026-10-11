@@ -50,7 +50,7 @@ def alternating_winner(dates, seed: int = 11, move: float = 0.02,
     """Two symbols; each day exactly one jumps and the other falls, unpredictably.
 
     This is the leak detector. There is nothing in the past to learn from, so a
-    blind alpha earns roughly nothing -- but an alpha that can see two days ahead
+    blind step earns roughly nothing -- but a step that can see two days ahead
     earns `move` every period, which compounds into something absurd. The net is
     therefore the answer to "did this step reach data it should not have".
     """

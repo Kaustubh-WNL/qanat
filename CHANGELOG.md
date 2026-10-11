@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.4.0 — 2026-10-11
+
+**Breaking.** The word `alpha` is gone, the shelf is gone, and four tool names changed.
+There are no aliases: registering old and new names doubles five tool definitions, and
+every definition is sent on every request.
+
+### `alpha` is deleted, and nothing replaced it
+
+`docs/words.md` defined an alpha as *the step that writes a weights table*, which is
+`step` plus a destination stage and no information of its own. A second word for one
+thing is what the first line of that file forbids.
+
+So the thing has no name, and the stage is what identifies it. `list_steps` gained a
+`stage` filter, which is how you find what produces the weights tables now, and a `net`
+flag that joins the replay history per step: `runs`, `last_run`, `last_net`, `best_net`,
+and which step is wired. A step removed from the file keeps its history, because what it
+earned still happened.
+
+| Was | Is |
+| --- | --- |
+| `alpha_book` | `list_steps(stage: "weights", net: true)` |
+| `list_alphas`, `read_alpha`, `use_alpha` | deleted with the shelf |
+| `qanat alphas` | deleted |
+| `--alpha` on `qanat backtest` | `--step` |
+| `alpha` on the `backtest`, `list_trials` tools | `step` |
+| `alpha` in the `bar:` block | `significance`, which is what it always meant |
+| `live_alphas:` in `qanat.yaml` | `live_steps:` |
+| `Project.alphas`, `.alpha()`, `.alpha_name()` | `.weights_steps`, `.weights_step()`, `.weights_name()` |
+| the `alpha_` step-id prefix | dropped. The stage says it |
+
+`list_steps` and `read_step` move from `full` to `research`. Reading a definition is not
+authoring one, and the pair existed only because the shelf offered a research-scope view
+of something else. **27 tools, down from 31.**
+
+### The shelf is gone, and one sort replaced it
+
+It held `momentum`, `reversal`, `low_vol` and `neutral_momentum`. Each computed one
+number per symbol per date and then did the same three things: rank the universe, keep
+the top few, weight them equally. A number per symbol per date is an **indicator**, and
+it belongs in the features stage with every other computed column.
+
+So there is no catalogue. `qanat init --demo` writes one indicator step and one sort over
+it, and the variation lives in `options.column` rather than in a different script. That
+is also the honest shape for what the engine does: testing whether an indicator meant
+anything requires building a paper basket from it on each rebalance date, and the
+procedure for doing that never changes.
+
+### `normalized` is a stage kind
+
+The scaffold always listed five stages and the enum had four, so the stage holding
+point-in-time facts carried `kind: features` and the contract could not say where it
+belonged. It can now: after `raw`, before anything computed, and `qanat check` enforces
+both. Existing projects keep working, because a kind is a label — but a project written
+before this release should change that one line.
+
+### One database migration, and it is automatic
+
+`_qanat_backtests.alpha` is renamed to `step` on open. Databases written before today are
+renamed rather than re-created, so every backtest anyone already ran keeps its row.
+Nothing else persisted changes, and no table is renamed.
+
 ## 0.3.0 — 2026-09-30
 
 ### Qanat is an MCP server for quant factor processing and backtesting

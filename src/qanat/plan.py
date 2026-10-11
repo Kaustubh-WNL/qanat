@@ -60,7 +60,7 @@ def job_spec(job: Source | Step, root: Path) -> dict:
         "universe": job.universe,
         "options": job.options,
         # These change every number the step produces, and were not in the snapshot:
-        # moving an alpha from a 1d to a 21d rebalance left `qanat plan` saying
+        # moving a step from a 1d to a 21d rebalance left `qanat plan` saying
         # nothing had changed.
         "rebalance": job.rebalance,
         "decay": job.decay,
@@ -186,21 +186,21 @@ def _diff_specs(old: dict, new: dict) -> list[str]:
 
 
 def _replay_writes(project: Project, store: Store) -> set[str]:
-    """Where a backtest lands its results: one table per alpha, plus one for every
+    """Where a backtest lands its results: one table per weights table, plus one for every
     blend that has been run. Derived the same way the engine derives it, so the
     two cannot disagree about which tables are results."""
     stage = next((x for x in project.stages if x.kind == "pnl"), None)
     if stage is None:
         return set()
-    keys = [a for a, _ in project.alphas]
+    keys = [a for a, _ in project.weights_steps]
     # a store written before blends existed has no rows to add here, and that is
     # the only reason this can come back empty
-    keys += [row["alpha"] for row in store.alpha_book() if row.get("alpha")]
+    keys += [row["step"] for row in store.steps_net() if row.get("step")]
     out = set()
     for key in keys:
         ids = [x for x in str(key).split("+") if x]
         if ids:
-            out.add(f"{stage.id}." + "_".join(i.removeprefix("alpha_") for i in ids))
+            out.add(f"{stage.id}." + "_".join(ids))
     return out
 
 

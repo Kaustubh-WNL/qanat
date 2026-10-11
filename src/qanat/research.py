@@ -38,23 +38,23 @@ from qanat.models import Project
 from qanat.store import Store
 
 
-def target_alphas(store: Store, project: Project, want: int) -> list[str]:
+def target_steps(store: Store, project: Project, want: int) -> list[str]:
     """Which strategies this pass should try to break, least-tested first.
 
     A strategy nobody has attacked is where an attack is worth most, so the one
-    with the fewest recorded trials goes first. Only alphas that have actually
+    with the fewest recorded trials goes first. Only ones that have actually
     produced a result are eligible: there is nothing to falsify about a rule that
     has never been priced.
     """
-    book = [row for row in store.alpha_book() if row.get("alpha")]
-    if not book:
+    priced = [row for row in store.steps_net() if row.get("step")]
+    if not priced:
         return []
-    ranked = sorted(book, key=lambda r: (store.trial_count(str(r["alpha"])),
+    ranked = sorted(priced, key=lambda r: (store.trial_count(str(r["step"])),
                                          -(r.get("runs") or 0)))
-    return [str(r["alpha"]) for r in ranked[: max(1, want)]]
+    return [str(r["step"]) for r in ranked[: max(1, want)]]
 
 
-def falsify_brief(alpha: str, net: Any, trials: int) -> str:
+def falsify_brief(step: str, net: Any, trials: int) -> str:
     """What an unattended pass is told when its job is to break something.
 
     Written to be hard to turn into good news. The instruction that matters most is
@@ -66,7 +66,7 @@ def falsify_brief(alpha: str, net: Any, trials: int) -> str:
     return f"""You are running unattended. Nobody is watching and nobody can answer
 a question, so do not ask one -- work with what the project already holds.
 
-Your job is to attack `{alpha}`, not to improve it. {had}It has {trials} recorded
+Your job is to attack `{step}`, not to improve it. {had}It has {trials} recorded
 trial(s) so far.
 
 Take the settings it already has and replay it under conditions it was not chosen
@@ -88,7 +88,7 @@ the part that matters: the attempts are the count that makes the surviving numbe
 mean anything, and nothing else writes them down.
 
 **Do not change the strategy.** Do not edit its step, retune its lookback, or add a
-new alpha. You are testing whether what is already believed holds up, and a pass
+new one. You are testing whether what is already believed holds up, and a pass
 that improves the thing it was measuring has measured nothing.
 
 **Do not conclude more than you found.** One losing window is a result for that
@@ -101,12 +101,12 @@ one people forget to report.
 Finish with two sentences: what you tried, and what it did to your confidence."""
 
 
-def monitor_brief(alpha: str) -> str:
+def monitor_brief(step: str) -> str:
     """The other safe goal: is the live thing still doing what it promised."""
     return f"""You are running unattended. Nobody is watching and nobody can answer
 a question, so do not ask one.
 
-`{alpha}` is being scored forward. Compare what it has earned since the frontier
+`{step}` is being scored forward. Compare what it has earned since the frontier
 against what its backtest implied, using `GET /api/live` and `GET /api/backtests`.
 
 Report the gap, not a verdict. Forward periods are few and noisy, so a shortfall
@@ -169,17 +169,17 @@ def run_pass(store: Store, project: Project, root: Path, base: str,
     budget = float(getattr(cfg, "budget_usd", 1.0) or 1.0)
     store.open_session(pass_.session_id, cli="", title=f"{pass_.goal} pass")
 
-    for i, alpha in enumerate(pass_.targets):
+    for i, step in enumerate(pass_.targets):
         if pass_.stopped:
             break
         if pass_.spent >= budget:
             store.event("info", "research",
-                        f"stopped after {alpha}: spent ${pass_.spent:.2f} of "
+                        f"stopped after {step}: spent ${pass_.spent:.2f} of "
                         f"${budget:.2f}")
             break
-        row = next((r for r in store.alpha_book() if r.get("alpha") == alpha), {})
-        brief = (falsify_brief(alpha, row.get("last_net"), store.trial_count(alpha))
-                 if pass_.goal == "falsify" else monitor_brief(alpha))
+        row = next((r for r in store.steps_net() if r.get("step") == step), {})
+        brief = (falsify_brief(step, row.get("last_net"), store.trial_count(step))
+                 if pass_.goal == "falsify" else monitor_brief(step))
         ask = Ask(question=brief)
         pass_.asks.append(ask)
         try:
@@ -190,10 +190,10 @@ def run_pass(store: Store, project: Project, root: Path, base: str,
             ask.done = True
         pass_.spent += float(ask.cost_usd or 0.0)
         store.note_ask(pass_.session_id, cost_usd=ask.cost_usd, model=ask.model,
-                       title=f"{pass_.goal} · {alpha}")
+                       title=f"{pass_.goal} · {step}")
         store.save_ask(pass_.session_id, ask.state())
         store.event("error" if ask.error else "info", "research",
-                    f"{pass_.goal} · {alpha}: "
+                    f"{pass_.goal} · {step}: "
                     + (ask.error[:120] if ask.error else (ask.answer[:120] or "done")))
 
     pass_.done = True
@@ -212,7 +212,7 @@ def start(state: Any, goal: str = "", base: str = "") -> Pass | None:
     """Fire a pass in the background, unless one is already running.
 
     Returns None when there is nothing to work on -- a project with no priced
-    alpha has nothing to falsify, and a pass that woke up to find that should say
+    project has nothing to falsify, and a pass that woke up to find that should say
     so rather than inventing something to do.
     """
     from qanat.headless import _agent_pref
@@ -223,10 +223,10 @@ def start(state: Any, goal: str = "", base: str = "") -> Pass | None:
     cfg = state.project.research
     want = int(getattr(cfg, "targets", 1) or 1)
     goal = goal or str(getattr(cfg, "goal", "falsify") or "falsify")
-    targets = target_alphas(state.store, state.project, want)
+    targets = target_steps(state.store, state.project, want)
     if not targets:
         state.store.event("warn", "research",
-                          "nothing to work on: no alpha in this project has been priced yet")
+                          "nothing to work on: nothing in this project has been priced yet")
         return None
 
     pass_ = Pass(goal, targets)

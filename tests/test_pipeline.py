@@ -224,43 +224,44 @@ def test_a_step_cannot_wait_on_a_table_it_does_not_read(tmp_path: Path):
 
 
 # ------------------------------------- what a new project looks like on day one
-def test_demo_wires_the_shelf_into_an_ordinary_project(tmp_path: Path):
-    """Nothing about a shelf alpha is special once it is written: each is a step
-    with its own script, its own weights table and its own line in the file."""
-    from qanat.scaffold import DEMO_ALPHAS, add_shelf_alphas
+def test_demo_wires_one_indicator_and_one_sort(tmp_path: Path):
+    """Day one is two ordinary steps. The indicator writes a column into features,
+    the sort reads that column and writes the weights table. The four shelf scripts
+    this replaced were four ways of computing one number, which is an indicator."""
+    from qanat.scaffold import DEMO_INDICATOR, DEMO_SORT, add_demo_steps
 
     write_project(tmp_path, "demo")
-    added = add_shelf_alphas(tmp_path)
-    assert added == [f"alpha_{n}" for n in DEMO_ALPHAS]
+    added = add_demo_steps(tmp_path)
+    assert added == [DEMO_INDICATOR, DEMO_SORT]
 
     project, root = load(tmp_path)
-    for name in DEMO_ALPHAS:
-        step = project.job(f"alpha_{name}")
-        assert step is not None, f"alpha_{name} is not in the project"
-        assert step.writes == [f"weights.{name}"], "each alpha writes its own table"
-        assert (root / step.script).exists(), "the script was not written"
-        assert step.universe, "a shelf alpha holds itself to a universe"
+    ind = project.job(DEMO_INDICATOR)
+    assert ind is not None and ind.writes == [f"features.{DEMO_INDICATOR}"]
+    assert (root / ind.script).exists(), "the indicator script was not written"
 
-    # the project now holds a book of alphas, not a single one
-    assert len({t for _, t in project.alphas}) >= len(DEMO_ALPHAS)
+    srt = project.job(DEMO_SORT)
+    assert srt is not None and srt.writes == [f"weights.{DEMO_INDICATOR}"]
+    assert srt.reads == [f"features.{DEMO_INDICATOR}"], "the sort reads the column"
+    assert srt.universe, "a step that holds a basket holds itself to a universe"
+    assert srt.options["column"] == "trailing_return", "the variation is the column"
 
 
 def test_demo_is_idempotent(tmp_path: Path):
-    from qanat.scaffold import add_shelf_alphas
+    from qanat.scaffold import add_demo_steps
 
     write_project(tmp_path, "demo")
-    assert add_shelf_alphas(tmp_path)
-    assert add_shelf_alphas(tmp_path) == [], "running it twice added the alphas again"
+    assert add_demo_steps(tmp_path)
+    assert add_demo_steps(tmp_path) == [], "running it twice added the steps again"
 
 
 def test_the_demo_project_still_obeys_the_contract(tmp_path: Path):
-    """Five alphas reading one table is exactly what the weights stage is for --
-    but no alpha may read another, and check has to keep saying so."""
+    """The sort reads features and writes weights, which is what the stage contract
+    is for -- and no weights step may read another, so check has to keep saying so."""
     from qanat.project import validate
-    from qanat.scaffold import add_shelf_alphas
+    from qanat.scaffold import add_demo_steps
 
     write_project(tmp_path, "demo")
-    add_shelf_alphas(tmp_path)
+    add_demo_steps(tmp_path)
     project, root = load(tmp_path)
     rep = validate(project, root)
     assert rep.ok, rep.errors
@@ -268,7 +269,7 @@ def test_the_demo_project_still_obeys_the_contract(tmp_path: Path):
 
 # ------------------------------------- the one real dataset that ships with it
 def test_the_bundled_dataset_runs_with_no_network(tmp_path: Path):
-    """Synthetic data proves the pipeline runs; it cannot say whether an alpha
+    """Synthetic data proves the pipeline runs; it cannot say whether a rule
     works. This is real, in the repo, and needs nothing from outside."""
     import shutil
 

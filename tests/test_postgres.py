@@ -115,7 +115,7 @@ def test_a_replay_can_rewrite_the_tables_it_shadows(project):
     col = proj.backtest.date_column
     frm, to = str(prices[col].min())[:10], str(prices[col].max())[:10]
 
-    res = run_backtest(store, proj, root, frm, to, rebalance="60d", alpha="portfolio")
+    res = run_backtest(store, proj, root, frm, to, rebalance="60d", step="portfolio")
     assert res.periods, f"no period priced: {res.notes[:3]}"
     assert res.totals["periods"] > 0
 

@@ -11,7 +11,7 @@ stops being a list of what one person thought of once.
 
 ## Can a step see the future
 
-The one question that cannot be answered by reading code, because a leaking alpha
+The one question that cannot be answered by reading code, because a leaking step
 looks like a brilliant one. Build data where seeing ahead is worth thousands of
 per cent and being blind is worth nothing, then let the net be the verdict.
 
@@ -24,7 +24,7 @@ per cent and being blind is worth nothing, then let the net be the verdict.
 | a table with no clock at all | F-14: the as-of views and the guard both skip it | reported in `conditions.no_clock` |
 
 **Not automated:** a step that writes its own timestamp; a `when:` chain that fires
-mid-replay; an alpha reading another alpha's PnL table.
+mid-replay; a step reading another step's PnL table.
 
 ## Is the arithmetic the arithmetic
 
@@ -36,7 +36,7 @@ Data with a known answer. `(1 + rate) ** n - 1` is not a matter of opinion.
 | alternating holdings with fees | nothing — turnover, fees, slippage all exact | same |
 | a blend with an allocation | nothing — exact | same |
 | a name that stops being priced | W-04: earned zero, still counted as held, no note | same |
-| a book that flips sign, with decay | W-16: rescaled to a third of the size the alpha asked for | `tests/` |
+| a book that flips sign, with decay | W-16: rescaled to a third of the size the step asked for | `tests/` |
 | `purge` and `embargo` | nothing — both shift by exactly what they say | `batteries/` |
 
 **Not automated:** a price of zero or below (F-08 — dropped now, but the report has
@@ -66,7 +66,7 @@ pagination; a source that is slow rather than down.
 | try | caught | automated |
 | --- | --- | --- |
 | a loop between two steps in one stage | G-01: `check` passed, values grew ×10 per run | `tests/` |
-| two steps writing one table | G-02: one portfolio counted as two alphas | `tests/` |
+| two steps writing one table | G-02: one portfolio counted as two steps | `tests/` |
 | a `${var}` with no option behind it | G-04: 0 rows, status ok | `tests/` |
 | a `.sql` body reading an undeclared table | G-05: the drawn graph was not the real one | `tests/` |
 | a step whose upstream failed | G-03: recomputed from yesterday, reported ok | `tests/` |
@@ -102,7 +102,7 @@ where a schema that lies about a field shows up.
 | --- | --- |
 | connect at each of the three scopes and count the tools | a tool that answers above its scope |
 | call every write tool with a field the schema does not declare | an argument honoured but undocumented |
-| ask an agent to add an alpha with no prior instruction | a flow that validates and then cannot run |
+| ask an agent to add a step with no prior instruction | a flow that validates and then cannot run |
 | pull the store out from under a live session | a tool that reports success on a closed database |
 
 **Not automated:** the last two. An agent pass is the standing cost of each run.

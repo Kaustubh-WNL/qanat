@@ -63,8 +63,8 @@ has to be the pool the step could actually see. So it moves as the pool moved, a
 file has no `from`/`to` dates makes the floor carry the same survivorship bias the strategy does.
 The run says so in a note rather than leaving the comparison looking cleaner than it is.
 
-Which universe is the run's: the one passed to the run if there was one, otherwise the alphas' own
-`universe:`. Two alphas priced together that name different universes get the same refusal they get
+Which universe is the run's: the one passed to the run if there was one, otherwise the steps' own
+`universe:`. Two priced together that name different universes get the same refusal they get
 for disagreeing about `rebalance` — a book spanning two pools has no single pool to be measured
 against. A run with no universe at all gets no benchmark lines and a note saying why, because the
 market is not a stand-in for a pool that was never chosen.
@@ -118,12 +118,12 @@ A run that takes a minute is readable from the first few seconds, and `_qanat_bt
 rows while it is still running. A test checks that scoring as it goes gives the same numbers as
 scoring the whole set afterwards.
 
-## An alpha can say how it wants to be run
+## A step can say how it wants to be run
 
-`rebalance:` and `decay:` on the step are that alpha's own defaults. A five-day reversal and a
+`rebalance:` and `decay:` on the step are that step's own defaults. A five-day reversal and a
 sixty-day momentum are not asking for the same gap.
 
-What the run asks for wins, then the alpha's own, then the project's. Two alphas priced in one book
+What the run asks for wins, then the step's own, then the project's. Two priced in one basket
 that disagree raise an error naming both, rather than letting one of them win silently.
 
 ## Costs are conditions of the run
@@ -147,7 +147,7 @@ misses and the per-period figure divides a few real returns over many empty slot
 So `totals` carries `held_periods` and `flat_periods` alongside `hit_rate_held` and
 `net_per_held_period`, and every surface that quotes the headline can qualify it. The report says
 both, and neither figure is quoted
-without the other. One alpha here reported `net +5.61%` and a `6.1%` hit rate having held a
+without the other. One step here reported `net +5.61%` and a `6.1%` hit rate having held a
 portfolio in three periods out of thirty-three; both numbers mislead, in opposite directions.
 
 ## Scoring forward
@@ -159,21 +159,21 @@ result every ten days.
 ```yaml
 backtest:
   live: true
-  live_alphas: [alpha_momentum]     # which one, or which ones, to price
+  live_steps: [sort_momentum]       # which one, or which ones, to price
 ```
 
-`live_alphas` is not optional once a project holds more than one alpha. Pricing two together is a
+`live_steps` is not optional once a project holds more than one weights table. Pricing two together is a
 third strategy, so the choice is not the scheduler's to make -- a project that cannot say gets one
 error and stops trying, rather than failing every thirty seconds into a log nobody has open.
 
 `live_from` is stamped by qanat, once, on the first pass that lands. It is the last date the data
 held when scoring was switched on, and everything after it is a return nobody could have looked at
-while choosing the alpha. Worked out fresh each time it would move forward daily and mean nothing;
+while choosing the step. Worked out fresh each time it would move forward daily and mean nothing;
 stamped by a pass that then failed it would name a moment nothing was ever scored at, which is why
 it is written after the run rather than before.
 
 That is the one sense of out-of-sample that cannot be arrived at by looking. An out-of-sample half
-was measured on rows that were already on disk when the alpha was picked: the data did not argue
+was measured on rows that were already on disk when the step was picked: the data did not argue
 back through the fitting, but it argued back through the person, because you knew how that year
 went. `report` gives the forward return and the rate that half implied, and the gap between
 them is the number worth reading.

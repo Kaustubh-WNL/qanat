@@ -44,11 +44,11 @@ That is what "fixed" means for **F-13**, and the message the user sees says so.
 ## Closed
 
 <details>
-<summary><b>Correctness of the replay — an alpha must not see the future</b> — 6 fixed</summary>
+<summary><b>Correctness of the replay — a step must not see the future</b> — 6 fixed</summary>
 
 | ID | Sev | Finding | Note |
 | --- | --- | --- | --- |
-| W-01 | C | `ctx.store.read()` and a schema-qualified `ctx.sql("… FROM main.raw__x")` both skip the as-of views. Cheating alpha earned 1292% against an honest 3.40%. | — |
+| W-01 | C | `ctx.store.read()` and a schema-qualified `ctx.sql("… FROM main.raw__x")` both skip the as-of views. A cheating step earned 1292% against an honest 3.40%. | — |
 | W-02 | C | A timezone offset is dropped by `CAST(col AS TIMESTAMP)`, so a `-05:00` row is visible 4 hours early and a `+09:00` row 9 hours late. | for a DuckDB store; on an attached Postgres the column carries its own zone and the plain cast is kept — a richer expression is rewritten on pushdown |
 | W-03 | C | REST `fetched_at` lands as `TIMESTAMPTZ`, so off UTC every row is hidden from a replay for the length of the offset. 0 of 1 rows visible on Asia/Seoul. | — |
 | R-01 | H | An epoch-integer clock breaks `max_time`, `read(as_of=)` and every PIT view read with `Unimplemented type for cast (BIGINT -> TIMESTAMP)`. | — |
@@ -77,7 +77,7 @@ That is what "fixed" means for **F-13**, and the message the user sees says so.
 | G-01 | C | A cycle in a features stage passes `qanat check` and multiplies feature values ×10 on every run, all steps reporting `ok`. | — |
 | G-03 | H | A downstream step runs after its upstream failed, reports `ok` on stale data, and is stamped up to date in `_qanat_state`. | — |
 | G-04 | H | A misspelled option leaves `${var}` literal in the SQL: 0 rows, status `ok`, no warning. | — |
-| G-02 | H | Two steps may write the same weights table; the book then counts one portfolio as two alphas with identical net. | — |
+| G-02 | H | Two steps may write the same weights table; the book then counts one portfolio as two steps with identical net. | — |
 | G-05 | H | A `.sql` body or `ctx.sql` can read an undeclared table, so the drawn lineage is wrong, `stale()` misses it, and `check` warns the opposite of the truth. | — |
 | W-05 | H | The digest ignores the data, so `compare` says "any difference here is the engine" when the data changed underneath. | — |
 | W-16 | M | `decay` silently rescales the book (\|w\| 1.0 → 0.33 for an offsetting book). `combine()` renormalises; `decay_weights` does not. | — |
@@ -135,7 +135,7 @@ That is what "fixed" means for **F-13**, and the message the user sees says so.
 
 | ID | Sev | Finding | Note |
 | --- | --- | --- | --- |
-| W-06 | H | The console's own "add an alpha" flow makes an alpha that cannot run; `check` says ok; the backtest returns HTTP 200 with 37 failures. | — |
+| W-06 | H | The console's own "add a step" flow makes a step that cannot run; `check` says ok; the backtest returns HTTP 200 with 37 failures. | — |
 | G-08 | M | A features stage can sit after `weights` — but only when a `pnl` stage exists (the check is on an `elif`). | — |
 | F-11 | M | Superseded by G-01. | — |
 
@@ -155,7 +155,7 @@ That is what "fixed" means for **F-13**, and the message the user sees says so.
 | U-08 | H | Delete has no confirmation and sits next to save. | — |
 | U-11 | H | No visible focus indicator anywhere; the one `:focus` rule removes the outline. | — |
 | U-12 | H | Folded panels keep their buttons in the tab order. | — |
-| U-13 | H | `edit` on an alpha card is hover-only and nested inside a button — no keyboard path at all. | — |
+| U-13 | H | `edit` on a step card is hover-only and nested inside a button — no keyboard path at all. | — |
 | U-10 | M | Escape closes the panel behind the form instead of the form. | — |
 | U-14 | M | 11 of 21 form inputs have no associated label. | — |
 | U-15 | M | Table sorting is bound to `<th>` and needs a mouse. | — |
@@ -180,7 +180,7 @@ these are why `batteries/` exists.
 - `purge` and `embargo` shift by exactly the duration given.
 - Blend allocation arithmetic is exact; zero and negative allocations are refused
   with clear messages.
-- The digest catches script edits and option changes; `seed` makes a random alpha
+- The digest catches script edits and option changes; `seed` makes a random step
   repeatable.
 - `runner.order()` sorts correctly for any declaration order, including fully
   reversed.

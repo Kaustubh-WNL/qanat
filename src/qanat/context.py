@@ -80,7 +80,7 @@ class Context:
         #: newer than this, and `ctx.now` is this instant rather than the wall clock,
         #: so the same replay twice gives the same numbers.
         self.as_of: str | None = as_of
-        #: A backtest may hold the same alpha to a different universe than the file
+        #: A backtest may hold the same step to a different universe than the file
         #: names, so "does this work on large caps too" costs one argument, not an edit.
         self.universe_override: str | None = universe
         self.now: datetime = (
@@ -103,7 +103,7 @@ class Context:
         reads the past like everything else. Naming a schema stepped around them --
         `main.raw__bars` reached the whole history, and since a replay never
         re-polls a source, the raw tables are the one place that history survives.
-        The alpha that did it earned 1292% against an honest 3.40%, and reported no
+        The step that did it earned 1292% against an honest 3.40%, and reported no
         failure, warning or note.
         """
         if self.as_of is not None:

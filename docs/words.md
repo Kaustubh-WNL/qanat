@@ -10,9 +10,7 @@ Each word means exactly one thing, and there is no second word for it.
 | **connector** | *How* a source connects: `rest`, `sql`, `csv`, `synthetic`. |
 | **step** | A script that turns tables into tables. |
 | **universe** | The symbols a portfolio is allowed to hold. Point-in-time when its file carries `from` and `to`. |
-| **alpha** | The step that writes a weights table. One alpha is one portfolio. |
-| **lineage** | What an alpha reads, back to the source. Alphas share lineage; that is why they are comparable. |
-| **alphaset** | What is priced together as one book: one alpha, or several. It has exactly one PnL table. |
+| **lineage** | What a step reads, back to the source. Steps share lineage; that is why they are comparable. |
 | **job** | A source or a step — anything that runs. |
 | **run** | One execution of a job. What the log and the history record. |
 
@@ -31,8 +29,8 @@ Four more words belong to `qanat backtest`:
 | **net sum** | The same periods added instead of compounded. Gross minus fees minus slippage reconciles against this one. |
 | **decay** | Holding a blend of the last N portfolios, newest heaviest, to stop paying fees for noise. |
 | **live** | Scoring forward as data arrives, instead of once over a window that already happened. |
-| **frontier** | The last date the data held when live scoring was switched on. Stamped once. Everything after it is a return nobody could have looked at while choosing the alpha. |
-| **held** | A period the alpha held something. A period that held nothing is still a period and still in the money -- it is not a decision, so the averages say both. |
+| **frontier** | The last date the data held when live scoring was switched on. Stamped once. Everything after it is a return nobody could have looked at while choosing the step. |
+| **held** | A period the step held something. A period that held nothing is still a period and still in the money -- it is not a decision, so the averages say both. |
 
 Three more words belong to `qanat plan`:
 
@@ -42,7 +40,14 @@ Three more words belong to `qanat plan`:
 | **orphan** | A table still in the database that nothing in the file produces any more. |
 | **stale** | A table whose rows were computed by a job that has changed since. Not deleted — just no longer current. |
 
-A **stage** has a **kind**: `raw`, `features`, `weights` or `pnl`.
+A **stage** has a **kind**: `raw`, `normalized`, `features`, `weights` or `pnl`.
+
+**A step that writes into the weights stage is terminal, and there is exactly one weights
+stage.** There is no separate word for such a step, and there used to be: it was called an
+alpha, and the definition was *the step that writes a weights table*, which is `step` plus a
+destination stage and no information of its own. A second word for one thing is what the first
+line of this file forbids, so it was deleted on 2026-10-11 rather than renamed. Finding them is
+`list_steps(stage: "weights")`, and the stage is what identifies them.
 
 ## The fields, one spelling each
 
@@ -55,8 +60,8 @@ A **stage** has a **kind**: `raw`, `features`, `weights` or `pnl`.
 | `schedule:` | source, step | a cron line |
 | `options:` | source, step | free configuration, passed through |
 | `universe:` | step | which universe it may hold |
-| `rebalance:` | step | how often this alpha wants to decide; a backtest uses it unless told otherwise |
-| `decay:` | step | how many portfolios this alpha wants blended |
+| `rebalance:` | step | how often this step wants to decide; a backtest uses it unless told otherwise |
+| `decay:` | step | how many baskets this step wants blended |
 | `mode:` | source | `append` or `replace` |
 | `kind:` | stage | `raw` · `features` · `weights` · `pnl` |
 | `store:` | project | path to the one DuckDB file |

@@ -3,7 +3,7 @@
 Momentum with the average taken out, so the portfolio is not just a bet that the
 market goes up. Long and short sides are equal, |weights| sum to 1.
 
-Wired by `qanat alphas add neutral_momentum`. It is an ordinary step -- edit it, or throw it
+An ordinary step -- edit it, or throw it
 away and write your own. That is the point of having it.
 """
 

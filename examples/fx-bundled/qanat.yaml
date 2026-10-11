@@ -25,7 +25,7 @@ stages:
     kind: raw
     description: the ECB reference rates exactly as the API returned them
   - id: normalized
-    kind: features
+    kind: normalized
     description: one row per currency per day, priced in USD
   - id: features
     kind: features

@@ -97,8 +97,8 @@ def _check_inside(root: Path, step: Step) -> None:
 def save_universe(project: Project, root: Path, raw: dict) -> list[str]:
     """Add or replace a universe, writing its symbol file if symbols were given.
 
-    Every shelf alpha holds itself to one, and a project that declares none was a
-    dead end: `use_alpha` refused, and told whoever asked to add one to
+    A step that holds a basket holds itself to one, and a project that declares
+    none was a dead end: the install refused, and told whoever asked to add one to
     `qanat.yaml` by hand -- which an agent reaching this project over MCP cannot
     do. The error named a fix that no tool offered.
     """
@@ -147,8 +147,9 @@ def set_bar(project: Project, root: Path, raw: dict) -> list[str]:
         bar = Bar(**{k: v for k, v in (raw or {}).items() if v is not None})
     except Exception as exc:
         raise EditorError(str(exc)) from exc
-    if not 0.0 < bar.alpha < 1.0:
-        raise EditorError(f"alpha is a significance level between 0 and 1, got {bar.alpha}")
+    if not 0.0 < bar.significance < 1.0:
+        raise EditorError(
+            f"significance is a level between 0 and 1, got {bar.significance}")
     if bar.t_floor < 0:
         raise EditorError(f"t_floor cannot be negative, got {bar.t_floor}")
 

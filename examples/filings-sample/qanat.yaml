@@ -25,7 +25,7 @@ stages:
     kind: raw
     description: filings and prices exactly as the files carry them
   - id: normalized
-    kind: features
+    kind: normalized
     description: typed, with the filing lag and the amendment flag made explicit
   - id: features
     kind: features
@@ -91,7 +91,7 @@ steps:
 
   - id: value_tilt
     from: [features.value]
-    to:   [weights.value_alpha]
+    to:   [weights.value_tilt]
     script: steps/value_tilt.py
     universe: listed
     rebalance: 60d

@@ -31,7 +31,7 @@ Python 3.10 or newer.
 
 ```bash
 uv tool install qanat-fdtl                 # or: pip install qanat-fdtl
-qanat init my-alpha --demo && cd my-alpha
+qanat init my-research --demo && cd my-research
 ```
 
 `--demo` builds four strategies and prices them in about fifteen seconds, so there is something
@@ -49,7 +49,7 @@ claude mcp add qanat -- qanat mcp --scope research
 Any MCP client works:
 
 ```json
-{ "mcpServers": { "qanat": { "command": "qanat", "args": ["mcp"], "cwd": "/path/to/my-alpha" } } }
+{ "mcpServers": { "qanat": { "command": "qanat", "args": ["mcp"], "cwd": "/path/to/my-research" } } }
 ```
 
 Then ask for things:
@@ -119,10 +119,10 @@ sources:
       headers: { Authorization: "Bearer ${PRICE_API_KEY}" }
 
 steps:
-  - id: alpha_momentum             # the step that writes weights is the strategy
+  - id: sort_momentum              # the step that writes weights ends the pipeline
     from: [features.momentum]
     to:   [weights.momentum]
-    script: steps/alpha_momentum.py
+    script: steps/sort_momentum.py
     rebalance: 20d
 
 backtest:
@@ -183,7 +183,7 @@ Set a bar and the count feeds into it:
 backtest:
   bar:
     rule: count        # none · floor · count
-    alpha: 0.05
+    significance: 0.05
     gate: true
 ```
 

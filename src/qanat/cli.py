@@ -41,7 +41,7 @@ def _load(args):
 
 # ------------------------------------------------------------------------ init
 def cmd_init(args) -> int:
-    from qanat.scaffold import add_shelf_alphas, write_project
+    from qanat.scaffold import add_demo_steps, write_project
 
     target = Path(args.directory).resolve()
     name = args.name or target.name.replace("-", "_")
@@ -59,20 +59,25 @@ def cmd_init(args) -> int:
         print(f"\n{where}qanat run && qanat serve")
         return 0
 
-    added = add_shelf_alphas(target)
+    added = add_demo_steps(target)
     for step_id in added:
         print(f"  {c('+', G)} {step_id}")
     print(f"\n{c('running the pipeline', D)}")
-    if (rc := _demo_fill(target, added)) != 0:
+    if (rc := _demo_fill(target)) != 0:
         return rc
     where = "" if target == Path.cwd() else f"cd {args.directory} && "
     print(f"\n{where}qanat serve")
     return 0
 
 
-def _demo_fill(target: Path, alphas: list[str]) -> int:
-    """Run the pipeline, then price each alpha, so the first thing an agent is
-    asked about is a book with real numbers in it rather than empty tables."""
+def _demo_fill(target: Path) -> int:
+    """Run the pipeline, then price every weights table, so the first thing an agent
+    is asked about has real numbers in it rather than empty tables.
+
+    What gets priced comes from the stage rather than from a list of ids: a step is
+    priceable because it writes into the weights stage, which is the same rule
+    `list_steps(stage="weights")` reports and the only thing that identifies one.
+    """
     from qanat.backtest import BacktestError, dates, run_backtest
     from qanat.project import load
     from qanat.runner import run_all
@@ -96,12 +101,12 @@ def _demo_fill(target: Path, alphas: list[str]) -> int:
         # The book's headline is the out-of-sample number, so a demo without a
         # split has nothing to report it from -- and teaches the habit of reading
         # the whole-sample number, which is the one that measures the choosing as
-        # much as the alpha.
+        # much as the rule.
         stops = dates(frm, to, project.backtest.rebalance)
         split = stops[len(stops) * 2 // 3][:10] if len(stops) > 5 else None
         def price(who, label):
             try:
-                res = run_backtest(store, project, root, frm, to, alpha=who, seed=7,
+                res = run_backtest(store, project, root, frm, to, step=who, seed=7,
                                    split=split)
                 net = (res.totals or {}).get("net", 0.0)
                 oos = ((res.segments or {}).get("out_of_sample") or {}).get("net")
@@ -112,13 +117,8 @@ def _demo_fill(target: Path, alphas: list[str]) -> int:
             except BacktestError as exc:
                 print(f"  {c('warn', Y)} {label}: {exc}")
 
-        for step_id in alphas:
+        for step_id, _ in project.weights_steps:
             price(step_id, step_id)
-        # and two of them priced as one book, which is a different strategy from
-        # either alone and the thing a single-alpha demo never shows
-        blend = [a for a in ("alpha_momentum", "alpha_low_vol") if a in alphas]
-        if len(blend) == 2:
-            price(blend, " + ".join(b.removeprefix("alpha_") for b in blend))
         return 0
     finally:
         store.close()
@@ -394,7 +394,7 @@ def cmd_backtest(args) -> int:
         res = run_backtest(
             store, project, root, args.frm, args.to,
             rebalance=args.rebalance, seed=args.seed,
-            decay=args.decay, universe=args.universe, split=args.split, alpha=args.alpha,
+            decay=args.decay, universe=args.universe, split=args.split, step=args.step,
             allocation=_allocation(args.allocation),
             fee_bps=args.fee_bps, slippage_bps=args.slippage_bps,
             purge=args.purge, embargo=args.embargo,
@@ -668,52 +668,6 @@ def _repair_after_crash(store, project, root) -> None:
         print(f"  {c('ok', G)} rebuilt\n")
 
 
-# ---------------------------------------------------------------------- alphas
-def cmd_alphas(args) -> int:
-    from qanat import alphas
-
-    if not args.name:
-        print(f"\n  {c('alphas on the shelf', B)}\n")
-        for a in alphas.describe():
-            print(f"  {c(a['name'], B):<28} {D}{a['side']}{X}")
-            print(f"    {a['title']}")
-            print(f"    {D}{a['why']}{X}")
-            print(f"    {D}options: {a['options']}{X}\n")
-        print(f"  {D}qanat alphas <name> --reads <stage.table>   wire one up{X}\n")
-        return 0
-
-    from qanat.editor import save_step
-
-    project, root = _load(args)
-    if args.name not in alphas.CATALOGUE:
-        print(c(f"no alpha called '{args.name}'. On the shelf: "
-                f"{', '.join(alphas.CATALOGUE)}", R_))
-        return 1
-    if not args.reads:
-        print(c("--reads is required: the table holding symbol, date and price", R_))
-        print(f"  {D}tables here: {', '.join(project.tables())}{X}")
-        return 1
-
-    wl = project.weights_stage
-    step_id = f"alpha_{args.name}"
-    target = f"{wl.id}.{args.name}"
-    universe = args.universe or next((st.universe for st in project.steps if st.universe), None)
-    if not universe:
-        print(c("this project declares no universe, and every shelf alpha needs one", R_))
-        return 1
-
-    script = alphas.write_alpha(root, args.name)
-    opts = dict(alphas.CATALOGUE[args.name]["options"])
-    opts["reads"] = args.reads
-    save_step(project, root, {"id": step_id, "from": [args.reads], "to": [target],
-                              "script": script, "universe": universe, "options": opts},
-              create_script=False)
-    print(f"  {c('+', G)} {step_id:<24} {D}{args.reads} → {target}, universe {universe}{X}")
-    print(f"  {c('+', G)} {script}")
-    print(f"\n  {D}qanat run && qanat backtest --alpha {step_id} --from … --to …{X}\n")
-    return 0
-
-
 # ------------------------------------------------------------------------- mcp
 def cmd_mcp(args) -> int:
     if getattr(args, "read_only", False):
@@ -745,7 +699,7 @@ def build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("init", help="scaffold a project")
     i.add_argument("--store", help="where the tables live: a path, or a postgres:// url")
     i.add_argument("--demo", action="store_true",
-                   help="wire the four shelf alphas, run the pipeline and price each one")
+                   help="wire one indicator and one sort over it, run the pipeline, price it")
     i.add_argument("directory", nargs="?", default=".")
     i.add_argument("--name")
     i.add_argument("--force", action="store_true")
@@ -795,11 +749,12 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--seed", type=int, default=0, help="pins every generator, so a rerun repeats")
     bt.add_argument("--decay", type=int,
                     help="hold a blend of the last N portfolios, newest heaviest. Cuts turnover")
-    bt.add_argument("--universe", help="run the alpha against this universe instead of the file's")
+    bt.add_argument("--universe", help="run the step against this universe instead of the file's")
     bt.add_argument("--split", help="first out-of-sample date. Before it is in-sample")
-    bt.add_argument("--alpha", help="which alpha to price (needed once there is more than one). "
-                                    "Name several, comma separated, to price them as one book")
-    bt.add_argument("--allocation", help="share per alpha in a blend, e.g. momentum=3,low_vol=1. "
+    bt.add_argument("--step", help="which weights table to price (needed once there is more "
+                                   "than one). "
+                                    "Name several, comma separated, to price them as one basket")
+    bt.add_argument("--allocation", help="share per step in a blend, e.g. momentum=3,low_vol=1. "
                                          "Equal split if left out")
     bt.add_argument("--fee-bps", type=float, dest="fee_bps",
                     help="commission on turnover, in basis points (default: from qanat.yaml)")
@@ -825,12 +780,6 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("a")
     cp.add_argument("b")
     cp.set_defaults(func=cmd_compare)
-
-    al = sub.add_parser("alphas", help="the alphas that ship with qanat, and how to wire one")
-    al.add_argument("name", nargs="?", help="wire this one up as the weights step")
-    al.add_argument("--reads", help="stage.table holding symbol, date and price")
-    al.add_argument("--universe", help="which universe it may hold")
-    al.set_defaults(func=cmd_alphas)
 
     mc = sub.add_parser("mcp", help="serve this project to an agent over MCP (stdio)")
     mc.add_argument("--scope", choices=list(SCOPES), default="full",

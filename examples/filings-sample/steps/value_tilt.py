@@ -10,7 +10,7 @@ and is not one.
 short and the absolute weights still sum to 1 -- and then the benchmark lines in the
 report stop being the right question to ask of it.
 
-Two filters before the ranking, and both are hygiene rather than alpha:
+Two filters before the ranking, and both are hygiene rather than edge:
 
 **The universe, as of the day being decided.** `ctx.universe()` returns the members
 of that day, so a company that had not listed yet is not held, and one that had

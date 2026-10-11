@@ -6,15 +6,15 @@ that only matter once you are using them.
 ## The agent's surface is wider than the CLI's
 
 Six tools share a name with a command and do the same thing: `check`, `plan`, `run`, `backtest`,
-`report`, `compare`. Two are renamed — `qanat backtests` is `list_backtests`, `qanat alphas` is
-`list_alphas`. Everything else differs, deliberately.
+`report`, `compare`. One is renamed — `qanat backtests` is `list_backtests`. Everything else differs,
+deliberately.
 
 An agent navigates where a person reads. `qanat ls` prints stages, tables and jobs in one dump;
 an agent gets `list_tables`, `list_steps` and `describe_table` separately, and `describe_table`
 plus `sample_table` to look inside one. `qanat report` prints a whole run; an agent also gets
 `period` and `weights` to open one point on the curve.
 
-Going the other way, `save_step`, `save_source`, `save_universe` and `use_alpha` have no CLI at
+Going the other way, `save_step`, `save_source` and `save_universe` have no CLI at
 all. You author a step in your editor; an agent authors one through the API.
 
 Five commands have no tool. `init` and `prune` because an agent works inside a project that
@@ -65,7 +65,7 @@ each column spans. It costs a scan, and the answer is the same size whatever the
 
 ## `save_universe` exists because the error used to name a fix nobody had
 
-Every shelf alpha holds itself to a universe, so `use_alpha` refuses on a project that declares
+A step that holds a basket holds itself to a universe, so the contract refuses a project that declares
 none. It used to say "add one to qanat.yaml" -- which an agent reaching this project over MCP
 cannot do, because there was no universe mutation anywhere. Give this one an id and some symbols
 and it writes the csv.
@@ -98,8 +98,8 @@ qanat mcp                    # 31 tools
 | scope | adds | tools |
 | --- | --- | --- |
 | `data` | read the tables | `list_tables` `describe_table` `sample_table` `profile_table` `lineage` `stale_tables` |
-| `research` | run a replay, read its result, compare runs | `backtest_conditions` `backtest` `report` `period` `weights` `compare` `list_backtests` `alpha_book` `list_alphas` `read_alpha` `read_bar` `record_trial` `list_trials` |
-| `full` | author, ingest, schedule | `list_steps` `read_step` `check` `plan` `run` `list_runs` `use_alpha` `save_step` `remove_step` `save_source` `save_universe` `set_bar` |
+| `research` | read the graph, run a replay, read its result, compare runs | `list_steps` `read_step` `backtest_conditions` `backtest` `report` `period` `weights` `compare` `list_backtests` `read_bar` `record_trial` `list_trials` |
+| `full` | author, ingest, schedule | `check` `plan` `run` `list_runs` `save_step` `remove_step` `save_source` `save_universe` `set_bar` |
 
 **It is one server and one service layer.** The scope decides which tools are listed, nothing
 else. Three separate servers would drift apart, and the CLI and the MCP server answering the same
@@ -174,7 +174,7 @@ sessions are open.
 ## `from:` is a list, and the tools treat it as one
 
 A step may read several tables, across any stage earlier than the one it writes -- `Step` is `n:m`,
-and the scaffold's own `portfolio` alpha reads three at once. `save_step` takes the whole list, and
+and the scaffold's own `portfolio` step reads three at once. `save_step` takes the whole list, and
 it is the permission set as much as the dependency list: `ctx.read()` refuses anything not named
-there. `use_alpha` installs a shelf rule against one primary table and takes `also_reads` for the
+there. `save_step` takes one primary table and `also_reads` for the
 rest, because the shelf scripts rank on one price table and a later edit may not.

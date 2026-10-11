@@ -7,7 +7,6 @@ network and no credentials. Swapping in a real feed is one block of YAML.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 
 QANAT_YAML = """\
@@ -30,17 +29,17 @@ stages:
     kind: raw
     description: landed exactly as it arrived, never edited
   - id: normalized
-    kind: features
+    kind: normalized
     description: typed, deduplicated, one key set
   - id: features
     kind: features
     description: operator outputs -- a feature step may read another feature step
   - id: weights
     kind: weights
-    description: one table per alpha -- a target weight per symbol, no budget
+    description: one table per step -- a target weight per symbol, no budget
   - id: pnl
     kind: pnl
-    description: what each alpha earned, per rebalance. Written by `qanat backtest`
+    description: what each weights table earned, per rebalance. Written by `qanat backtest`
 
 # ---------------------------------------------------------------- the sources --
 # Many sources may feed one stage; each writes its own table.
@@ -275,46 +274,59 @@ FILES = {
 }
 
 
-#: What `--demo` adds to the starter project. Four alphas, so the first question
-#: lands on a book rather than a single result, and so the graph on the README is
-#: the graph you actually get. Every one is an ordinary step reading an ordinary
-#: table.
-DEMO_ALPHAS = ("momentum", "reversal", "low_vol", "neutral_momentum")
+#: What `--demo` adds to the starter project: one indicator and one sort over it,
+#: which is the whole loop in two steps. The four scripts this replaced were four
+#: ways of computing one number, and a number per symbol per date is an indicator,
+#: so they belonged in the features stage rather than beside it.
+DEMO_INDICATOR = "trailing_return"
+DEMO_SORT = "sort_on_trailing_return"
 
 
-def add_shelf_alphas(root: Path, names: Sequence[str] = DEMO_ALPHAS,
-                     reads: str = "normalized.prices") -> list[str]:
-    """Wire shelf alphas into a project that is already on disk.
+def add_demo_steps(root: Path, reads: str = "normalized.prices") -> list[str]:
+    """Wire one indicator and one sort into a project that is already on disk.
 
-    Each becomes a step like any other: its own script under `steps/`, its own
-    weights table, its own line in `qanat.yaml`. Nothing about them is special
-    once they are written, which is the point of the shelf.
+    Both are ordinary steps: their own scripts under `steps/`, their own lines in
+    `qanat.yaml`. Nothing about either is special once written, which is the point.
+    The indicator writes a column into the features stage; the sort reads that
+    column and writes the weights table.
     """
-    from qanat import alphas
+    from qanat import sort as sortmod
     from qanat.editor import save_step
     from qanat.project import load
 
     project, root = load(root)
     weights = project.weights_stage
     if weights is None:
-        raise ValueError("this project has no weights stage, so there is nowhere for an alpha to go")
+        raise ValueError(
+            "this project has no weights stage, so there is nowhere for a basket to go")
+    features = next((x for x in project.stages if x.kind == "features"), None)
+    if features is None:
+        raise ValueError("this project has no features stage, so an indicator has nowhere to go")
     universe = next((st.universe for st in project.steps if st.universe), None) \
         or (project.universes[0].id if project.universes else None)
 
     added = []
-    for name in names:
-        step_id = f"alpha_{name}"
-        if project.job(step_id) is not None:
-            continue
-        script = alphas.write_alpha(root, name)
-        opts = dict(alphas.CATALOGUE[name]["options"])
-        opts["reads"] = reads
+    ind_ref = f"{features.id}.{DEMO_INDICATOR}"
+    if project.job(DEMO_INDICATOR) is None:
+        script = sortmod.write_script(root, DEMO_INDICATOR, sortmod.INDICATOR)
         save_step(project, root, {
-            "id": step_id, "from": [reads], "to": [f"{weights.id}.{name}"],
-            "script": script, "universe": universe, "options": opts,
+            "id": DEMO_INDICATOR, "from": [reads], "to": [ind_ref],
+            "script": script, "options": {"reads": reads, "lookback": 20},
         }, create_script=False)
         project, root = load(root)
-        added.append(step_id)
+        added.append(DEMO_INDICATOR)
+
+    if project.job(DEMO_SORT) is None:
+        script = sortmod.write_script(root, DEMO_SORT, sortmod.SORT)
+        save_step(project, root, {
+            "id": DEMO_SORT, "from": [ind_ref],
+            "to": [f"{weights.id}.{DEMO_INDICATOR}"],
+            "script": script, "universe": universe,
+            "options": {"reads": ind_ref, "column": "trailing_return",
+                        "high_is_good": True, "top_n": 4},
+        }, create_script=False)
+        project, root = load(root)
+        added.append(DEMO_SORT)
     return added
 
 

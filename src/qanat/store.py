@@ -317,10 +317,26 @@ class Store:
                     report      VARCHAR,
                     error       VARCHAR
                 )""")
-            # Older databases predate the alpha column. Adding it is safe and keeps
-            # every backtest anyone already ran, which is the point of the book.
+            # Two migrations on the same column, and the order matters. Databases
+            # written before 2026-10-11 carry it as `alpha`, a word this engine no
+            # longer uses: the thing it named is a step that writes the weights
+            # stage, and the stage is what identifies it. Rename rather than add, so
+            # every backtest anyone already ran keeps its row. Older databases
+            # predate the column entirely, and the ADD below covers both that case
+            # and a database already migrated.
+            #
+            # Asked rather than attempted. A rename that fails because the column is
+            # not there looks exactly like a rename that fails because the database
+            # is unwritable, and swallowing the second to tolerate the first is how a
+            # migration goes quiet.
+            had = [r[0] for r in self.con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = ? AND table_name = ?",
+                [self.home, BACKTESTS]).fetchall()]
+            if "alpha" in had and "step" not in had:
+                self.con.execute(f"ALTER TABLE {BACKTESTS} RENAME COLUMN alpha TO step")
             self.con.execute(
-                f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS alpha VARCHAR"
+                f"ALTER TABLE {BACKTESTS} ADD COLUMN IF NOT EXISTS step VARCHAR"
             )
             self.con.execute(f"""
                 CREATE TABLE IF NOT EXISTS {BT_WEIGHTS} (
@@ -385,7 +401,7 @@ class Store:
             #  Which conversation a replay came out of. The run already records
             #  what was asked of the engine; this records who asked and why, and
             #  it is the join that lets a session show what it produced and an
-            #  alpha show the sessions it came from.
+            #  weights table show the sessions it came from.
             #
             #  Nullable on purpose: a replay from the CLI or the scheduler belongs
             #  to no conversation, and pretending otherwise would invent a session
@@ -918,16 +934,16 @@ class Store:
         return str(row[0]) if row else None
 
     def start_backtest(
-        self, frm: str, to: str, rebalance: str, seed: int, digest: str, alpha: str = "",
+        self, frm: str, to: str, rebalance: str, seed: int, digest: str, step: str = "",
         live: bool = False, session_id: str = "",
     ) -> int:
         run_id = time.time_ns() // 1000
         with self._lock:
             self.con.execute(
                 f"INSERT INTO {BACKTESTS} (run_id, created_at, from_date, to_date, rebalance, "
-                "seed, digest, status, periods, alpha, live, session_id) "
+                "seed, digest, status, periods, step, live, session_id) "
                 "VALUES (?, now()::TIMESTAMP, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)",
-                [run_id, frm, to, rebalance, seed, digest, alpha, live, session_id or None],
+                [run_id, frm, to, rebalance, seed, digest, step, live, session_id or None],
             )
         return run_id
 
@@ -1093,16 +1109,16 @@ class Store:
         """What this conversation replayed, newest first."""
         df = self.rcon.execute(f"""
             SELECT run_id, created_at, from_date, to_date, rebalance, digest, status,
-                   periods, net, turnover, alpha, live
+                   periods, net, turnover, step, live
             FROM {BACKTESTS} WHERE session_id = ? ORDER BY created_at DESC
         """, [session_id]).df()
         return _records(df)
 
-    def alpha_sessions(self, alpha: str) -> list[dict[str, Any]]:
-        """Every conversation that replayed this alpha, and what it got.
+    def step_sessions(self, step: str) -> list[dict[str, Any]]:
+        """Every conversation that replayed this weights table, and what it got.
 
-        The other direction of the same join: from a strategy back to the rooms it
-        was worked out in.
+        The other direction of the same join: from a weights table back to the
+        rooms it was worked out in.
         """
         df = self.rcon.execute(f"""
             SELECT s.session_id, s.started_at, s.title, s.summary,
@@ -1112,16 +1128,16 @@ class Store:
                    arg_max(b.run_id, b.created_at) AS last_run_id
             FROM {BACKTESTS} b
             JOIN {SESSIONS} s ON s.session_id = b.session_id
-            WHERE b.alpha = ?
+            WHERE b.step = ?
             GROUP BY ALL
             ORDER BY max(b.created_at) DESC
-        """, [alpha]).df()
+        """, [step]).df()
         return _records(df)
 
     def backtests(self, limit: int = 50) -> list[dict[str, Any]]:
         df = self.rcon.execute(
                 f"SELECT run_id, created_at, from_date, to_date, rebalance, seed, digest, "
-                f"status, periods, gross, fees, slippage, net, turnover, error, alpha, live, "
+                f"status, periods, gross, fees, slippage, net, turnover, error, step, live, "
                 f"session_id FROM {BACKTESTS} ORDER BY created_at DESC LIMIT {int(limit)}"
         ).df()
         return _records(df)
@@ -1166,14 +1182,14 @@ class Store:
                 f"UPDATE {BACKTESTS} SET {', '.join(sets)} WHERE run_id = ?", args
             )
 
-    def trials(self, alpha: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    def trials(self, step: str = "", limit: int = 200) -> list[dict[str, Any]]:
         """The ledger, newest first: every attempt, whatever came of it."""
         where, args = "WHERE status = 'ok'", []
-        if alpha:
-            where += " AND alpha = ?"
-            args.append(alpha)
+        if step:
+            where += " AND step = ?"
+            args.append(step)
         df = self.rcon.execute(f"""
-            SELECT run_id, created_at, alpha, digest, from_date, to_date, rebalance,
+            SELECT run_id, created_at, step, digest, from_date, to_date, rebalance,
                    seed, net, turnover, periods, session_id,
                    hypothesis, parent_run_id, disposition, seal, proposed_by
             FROM {BACKTESTS} {where}
@@ -1181,7 +1197,7 @@ class Store:
         """, args).df()
         return _records(df)
 
-    def trial_count(self, alpha: str = "") -> int:
+    def trial_count(self, step: str = "") -> int:
         """How many distinct questions were asked before you read the answer.
 
         Distinct **digests**, not runs. Re-running the same configuration is the
@@ -1189,36 +1205,37 @@ class Store:
         changing the lookback, the window, the universe or the split is a new one.
         The digest already draws that line, which is why it is the key here.
 
-        `alpha` scopes it, and the scope is a judgement rather than a property of
+        `step` scopes it, and the scope is a judgement rather than a property of
         the data: the number that matters is the size of the set the winner was
         chosen from. Picking the best lookback for one rule counts that rule's
         trials; picking the best of six rules counts all six.
         """
         sql = f"SELECT count(DISTINCT digest) FROM {BACKTESTS} WHERE status = 'ok'"
         args: list[Any] = []
-        if alpha:
-            sql += " AND alpha = ?"
-            args.append(alpha)
+        if step:
+            sql += " AND step = ?"
+            args.append(step)
         row = self.rcon.execute(sql, args).fetchone()
         return int(row[0]) if row else 0
 
-    def alpha_book(self) -> list[dict[str, Any]]:
-        """Every alpha this project has ever backtested, newest run first.
+    def steps_net(self) -> list[dict[str, Any]]:
+        """Every weights table this project has backtested, newest run first.
 
-        The book is derived from history rather than declared anywhere: an alpha is
-        in it because it produced a result, which is the only claim worth keeping.
+        Derived from history rather than declared anywhere: a row is here because
+        it produced a net, which is the only claim worth keeping. A step removed
+        from the file keeps its row, because what it earned still happened.
         """
         with self._lock:
             df = self.con.execute(f"""
-                SELECT alpha,
+                SELECT step,
                        count(*)                                  AS runs,
                        max(created_at)                           AS last_run,
                        arg_max(run_id, created_at)               AS last_run_id,
                        arg_max(net, created_at)                  AS last_net,
                        max(net)                                  AS best_net
                 FROM {BACKTESTS}
-                WHERE alpha IS NOT NULL AND alpha <> '' AND periods > 0
-                GROUP BY alpha
+                WHERE step IS NOT NULL AND step <> '' AND periods > 0
+                GROUP BY step
                 ORDER BY max(created_at) DESC
             """).df()
         return _records(df)

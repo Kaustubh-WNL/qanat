@@ -18,7 +18,7 @@ from qanat.models import Step
 from qanat.store import Store
 
 
-# ------------------------------------------------------- an alpha and the clock
+# -------------------------------------------------------- a step and the clock
 def test_w01_store_read_respects_the_replay_clock(tmp_path: Path):
     """`ctx.store.read()` reached around the as-of views, needing no SQL at all."""
     s = Store(tmp_path / "t.duckdb")
@@ -150,7 +150,7 @@ def test_w04_a_holding_with_no_price_is_not_counted_as_held():
     assert period.gross == pytest.approx(0.5 * 0.1)
 
 
-def test_w16_decay_keeps_the_book_the_size_the_alpha_asked_for():
+def test_w16_decay_keeps_the_basket_the_size_the_step_asked_for():
     """Averaging alone shrank a book whose sides offset -- |weights| 1.00 became
     0.33, so "less turnover" quietly also meant "a third of the bet"."""
     from qanat.backtest import decay_weights
@@ -281,7 +281,7 @@ def _project(tmp_path: Path, steps: str, files: dict) -> tuple:
     (tmp_path / "seed").mkdir(exist_ok=True)
     (tmp_path / "seed/b.csv").write_text("date,symbol,close\n2024-01-01,A,1.0\n")
     (tmp_path / "steps/norm.sql").write_text("SELECT * FROM raw__b")
-    (tmp_path / "steps/alpha.py").write_text(
+    (tmp_path / "steps/sorter.py").write_text(
         "import pandas as pd\ndef run(ctx):\n    return pd.DataFrame("
         "{'symbol': ['A'], 'weight': [1.0], 'as_of': ['2024-01-01']})\n")
     for name, body in files.items():
@@ -295,7 +295,7 @@ def _project(tmp_path: Path, steps: str, files: dict) -> tuple:
         "steps:\n"
         "  - {id: norm, from: [raw.b], to: [f.prices], script: steps/norm.sql}\n"
         f"{steps}"
-        "  - {id: alpha_h, from: [f.prices], to: [weights.h], script: steps/alpha.py}\n"
+        "  - {id: sorter_h, from: [f.prices], to: [weights.h], script: steps/sorter.py}\n"
     )
     return load(tmp_path)
 
@@ -318,11 +318,11 @@ def test_g01_a_loop_between_steps_is_refused(tmp_path: Path):
 
 def test_g02_one_table_has_one_producer(tmp_path: Path):
     """Two steps could write one weights table, and the book then counted one
-    portfolio as two alphas with identical net."""
+    portfolio as two steps with identical net."""
     from qanat.project import validate
 
     p, root = _project(
-        tmp_path, "  - {id: alpha_g, from: [f.prices], to: [weights.h], script: steps/alpha.py}\n", {}
+        tmp_path, "  - {id: sorter_g, from: [f.prices], to: [weights.h], script: steps/sorter.py}\n", {}
     )
     rep = validate(p, root)
     assert any("one producer" in e for e in rep.errors), rep.errors
@@ -364,7 +364,7 @@ def test_f07_a_rejected_edit_leaves_the_project_alone(tmp_path: Path):
     p, root = _project(tmp_path, "", {})
     with pytest.raises(EditorError):
         save_step(p, root, {"id": "bogus", "from": ["nope.nothing"], "to": ["f.b1"],
-                            "script": "steps/alpha.py"}, create_script=False)
+                            "script": "steps/sorter.py"}, create_script=False)
     assert validate(p, root).ok, "the rejected step must not still be in the project"
     assert "bogus" not in (root / "qanat.yaml").read_text()
 
@@ -452,14 +452,14 @@ def test_f13_a_job_that_runs_too_long_gives_its_worker_back(tmp_path: Path):
     p.steps[-1].timeout = "1s"
     store = S(p.store_url(root))
     sched = Scheduler(store, p, root, workers=2)
-    assert sched.limit("alpha_h") == 1.0
+    assert sched.limit("sorter_h") == 1.0
 
     with sched._lock:
-        sched._inflight.add("alpha_h")
-        sched._deadline["alpha_h"] = time.time() - 0.1   # already overdue
-    store.start_run("alpha_h", "step", ["weights.h"])
-    assert sched.reap() == ["alpha_h"]
-    assert "alpha_h" not in sched._inflight
+        sched._inflight.add("sorter_h")
+        sched._deadline["sorter_h"] = time.time() - 0.1   # already overdue
+    store.start_run("sorter_h", "step", ["weights.h"])
+    assert sched.reap() == ["sorter_h"]
+    assert "sorter_h" not in sched._inflight
     left = store.query("SELECT count(*) c FROM _qanat_runs WHERE status = 'running'")["c"][0]
     assert int(left) == 0
     store.close()
@@ -472,11 +472,11 @@ def test_f13_a_running_job_can_be_cancelled(tmp_path: Path):
     p, root = _project(tmp_path, "", {})
     store = S(p.store_url(root))
     sched = Scheduler(store, p, root, workers=2)
-    assert sched.cancel("alpha_h") is False, "nothing is running yet"
+    assert sched.cancel("sorter_h") is False, "nothing is running yet"
     with sched._lock:
-        sched._inflight.add("alpha_h")
-    assert sched.cancel("alpha_h") is True
-    assert "alpha_h" not in sched._inflight
+        sched._inflight.add("sorter_h")
+    assert sched.cancel("sorter_h") is True
+    assert "sorter_h" not in sched._inflight
     store.close()
 
 

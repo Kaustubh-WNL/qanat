@@ -186,41 +186,39 @@ def test_check_is_not_cli_only(tmp_path: Path):
     session.close()
 
 
-def test_the_shelf_installs_an_alpha_that_runs(tmp_path: Path):
-    """A shelf alpha has to become an ordinary step -- one that the contract accepts
-    and the runner can execute -- or it is a demo, not a starting point."""
+def test_list_steps_filters_by_stage_and_adds_net(tmp_path: Path):
+    """The shelf is gone and nothing replaced it. What produces the weights tables
+    has no name of its own, so it is found by filtering on the stage that
+    identifies it -- and `net` is what each one has earned."""
     from qanat.project import validate
 
     session = _session(tmp_path)
-    names = {a["name"] for a in _call(session, "list_alphas")["alphas"]}
-    assert {"momentum", "reversal", "low_vol", "neutral_momentum"} <= names
-
-    # an alpha is its own DAG now, so adding one leaves the others in place
-    before = {a for a, _ in session.project.alphas}
-    out = _call(session, "use_alpha", {"name": "neutral_momentum", "reads": "normalized.prices"})
-    assert out["installed"] == "alpha_neutral_momentum"
-    assert out["writes"] == "weights.neutral_momentum"
-    session.reload()
-    after = {a for a, _ in session.project.alphas}
-    assert before < after, "adding an alpha must not remove the one that was there"
-
-    session.reload()
     assert validate(session.project, session.root).ok
-    results = {r.job_id: r for r in run_all(session.store, session.project, session.root)}
-    assert results["alpha_neutral_momentum"].ok, results["alpha_neutral_momentum"].error
+    assert all(r.ok for r in run_all(session.store, session.project, session.root))
 
-    weights = session.store.read("weights.neutral_momentum")
-    assert abs(weights["weight"].abs().sum() - 1.0) < 1e-6   # book size is fixed
-    assert abs(weights["weight"].sum()) < 1e-6               # and it is market neutral
+    everything = _call(session, "list_steps")
+    assert everything["sources"], "unfiltered, the sources come too"
+
+    only = _call(session, "list_steps", {"stage": "weights"})
+    assert only["sources"] == [], "a stage filter is about steps, so sources drop out"
+    ids = {s["id"] for s in only["steps"]}
+    assert ids == {a for a, _ in session.project.weights_steps}
+    assert ids, "the scaffold writes one step into the weights stage"
+
+    with_net = _call(session, "list_steps", {"stage": "weights", "net": True})
+    row = with_net["steps"][0]
+    assert "net" in row and "wired" in row
+    assert row["wired"] is True
+    assert row["net"] is None, "nothing has been replayed yet, so there is no net"
+    assert with_net["wired_now"] == sorted(ids) or set(with_net["wired_now"]) == ids
     session.close()
-
 
 def test_conditions_are_asked_for_not_assumed(tmp_path: Path):
     session = _session(tmp_path)
     c = _call(session, "backtest_conditions")
     assert set(c["ask_the_person_for"]) == {
-        "alpha", "from", "to", "universe", "rebalance", "decay", "split"}
-    assert c["alphas_in_this_project"]
+        "step", "from", "to", "universe", "rebalance", "decay", "split"}
+    assert c["weights_in_this_project"]
     assert c["universe"]["declared_on_steps"] == ["demo8"]
     assert c["window"]["data_available"]["latest"]
     session.close()

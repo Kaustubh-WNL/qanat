@@ -9,7 +9,7 @@ stages:
   kind: raw
   description: landed exactly as it arrived, never edited
 - id: normalized
-  kind: features
+  kind: normalized
   description: typed, deduplicated, one key set
 - id: features
   kind: features
@@ -19,7 +19,7 @@ stages:
   description: one table, one portfolio -- a target weight per symbol
 - id: pnl
   kind: pnl
-  description: what each alpha earned, per rebalance. Written by `qanat backtest`
+  description: what each weights table earned, per rebalance. Written by `qanat backtest`
 sources:
 - id: daily_prices
   to:
@@ -64,34 +64,34 @@ steps:
   - features.tone
   script: steps/tone.sql
   schedule: '*/5 * * * *'
-- id: alpha_momentum
+- id: sort_momentum
   from:
   - normalized.prices
   to:
   - weights.momentum
-  script: steps/alpha_momentum.py
+  script: steps/sort_momentum.py
   universe: demo8
   options:
     lookback: 60
     top_n: 4
     reads: normalized.prices
-- id: alpha_low_vol
+- id: sort_low_vol
   from:
   - normalized.prices
   to:
   - weights.low_vol
-  script: steps/alpha_low_vol.py
+  script: steps/sort_low_vol.py
   universe: demo8
   options:
     window: 60
     top_n: 4
     reads: normalized.prices
-- id: alpha_neutral_momentum
+- id: sort_neutral_momentum
   from:
   - normalized.prices
   to:
   - weights.neutral_momentum
-  script: steps/alpha_neutral_momentum.py
+  script: steps/sort_neutral_momentum.py
   universe: demo8
   options:
     lookback: 60

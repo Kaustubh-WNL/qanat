@@ -97,7 +97,7 @@ raw.filings ─┐                              (clock: filed_at)
              ├─→ normalized.filings ─→ features.fundamentals ─┐
 raw.prices ──┴─→ normalized.prices ──────────────────────────┴─→ features.value
                                                                       │
-                                                          weights.value_alpha
+                                                          weights.value_tilt
 ```
 
 | step | what it does |

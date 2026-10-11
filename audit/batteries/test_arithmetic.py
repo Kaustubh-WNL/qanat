@@ -16,8 +16,8 @@ G = 0.001                       # +0.1% a day, every day, for everyone
 CAL = data.calendar(200)
 
 
-def _run(tmp_path, name, bars, alpha, **kw):
-    root = harness.build(tmp_path, name, bars, alpha, **kw)
+def _run(tmp_path, name, bars, step, **kw):
+    root = harness.build(tmp_path, name, bars, step, **kw)
     project, r, store, _rep, results = harness.run(root)
     assert all(x.ok for x in results), [x.error for x in results if not x.ok]
     return project, r, store
@@ -96,11 +96,11 @@ def test_the_knobs_shift_by_exactly_what_they_say(tmp_path, knob, value):
     s1.close()
 
 
-def test_blending_two_alphas_is_a_weighted_sum(tmp_path):
-    """A blend's gross is the allocation times each alpha's gross. Nothing else."""
+def test_blending_two_steps_is_a_weighted_sum(tmp_path):
+    """A blend's gross is the allocation times each step's gross. Nothing else."""
     ga, gb = 0.002, 0.0005
     bars = data.drift(CAL, {"A": ga, "B": gb})
-    extra = ("  - id: alpha_g\n"
+    extra = ("  - id: sorter_g\n"
              "    from: [normalized.prices]\n"
              "    to: [weights.g]\n"
              "    script: steps/beta.py\n"
@@ -112,6 +112,6 @@ def test_blending_two_alphas_is_a_weighted_sum(tmp_path):
     assert all(x.ok for x in results), [x.error for x in results if not x.ok]
     for alloc, wa, wb in [(None, 0.5, 0.5), ({"h": 3, "g": 1}, 0.75, 0.25)]:
         bt = harness.backtest(store, project, r, "2024-02-01", "2024-05-01",
-                              alpha=["alpha_h", "alpha_g"], allocation=alloc)
+                              step=["sorter_h", "sorter_g"], allocation=alloc)
         assert bt.periods[5].gross == pytest.approx(wa * ga + wb * gb, abs=1e-12)
     store.close()

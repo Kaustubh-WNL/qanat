@@ -217,7 +217,7 @@ def _profile_table(s: Session, args: dict) -> Any:
     return prof
 
 
-@tool("lineage", "What feeds a table, and which alphas break if it breaks.",
+@tool("lineage", "What feeds a table, and which weights tables break if it breaks.",
       {"properties": {"ref": {"type": "string"}}, "required": ["ref"]},
       scope="data")
 def _lineage(s: Session, args: dict) -> Any:
@@ -245,24 +245,51 @@ def _lineage(s: Session, args: dict) -> Any:
     }
 
 
-@tool("list_steps", "Every job in the graph -- sources and steps -- in dependency order.",
-      {"properties": {}},
-      scope="full")
+@tool("list_steps",
+      "Every job in the graph -- sources and steps -- in dependency order. `stage` keeps only the "
+      "steps writing into one stage, which is how you find what produces the weights tables: "
+      "there is no separate name for those, the stage is what identifies them. `net` adds what "
+      "each one has earned across every replay it has had.",
+      {"properties": {
+          "stage": {"type": "string",
+                    "description": "keep only steps writing into this stage, e.g. weights"},
+          "net": {"type": "boolean",
+                  "description": "add runs, last_run, last_net and best_net per step, from the "
+                                 "replay history, and say which step is wired now. A step "
+                                 "removed from the file keeps its history, because what it "
+                                 "earned still happened"},
+      }, "required": []},
+      scope="research")
 def _list_steps(s: Session, args: dict) -> Any:
     from qanat.runner import order
 
-    return {
-        "sources": [{"id": x.id, "to": x.writes, "connector": x.connector,
-                     "schedule": x.schedule, "options": x.options} for x in s.project.sources],
-        "steps": [{"id": x.id, "from": x.reads, "to": x.writes, "script": x.script,
-                   "universe": x.universe, "schedule": x.schedule, "options": x.options}
-                  for x in order(s.project)],
+    stage = str(args.get("stage") or "").strip()
+    steps = [x for x in order(s.project)
+             if not stage or any(w.startswith(f"{stage}.") for w in x.writes)]
+    rows = [{"id": x.id, "from": x.reads, "to": x.writes, "script": x.script,
+             "universe": x.universe, "schedule": x.schedule, "options": x.options}
+            for x in steps]
+    out: dict[str, Any] = {
+        "sources": [] if stage else [
+            {"id": x.id, "to": x.writes, "connector": x.connector,
+             "schedule": x.schedule, "options": x.options} for x in s.project.sources],
+        "steps": rows,
     }
+    if args.get("net"):
+        by_step = {r["step"]: r for r in s.store.steps_net()}
+        wired = [sid for sid, _ in s.project.weights_steps]
+        for r in rows:
+            r["net"] = by_step.get(r["id"])
+            r["wired"] = r["id"] in wired
+        gone = [r for sid, r in by_step.items() if sid not in {x["id"] for x in rows}]
+        out["no_longer_in_the_file"] = gone or None
+        out["wired_now"] = wired
+    return out
 
 
 @tool("read_step", "The script a step runs.",
       {"properties": {"id": {"type": "string"}}, "required": ["id"]},
-      scope="full")
+      scope="research")
 def _read_step(s: Session, args: dict) -> Any:
     sid = _need(args, "id")
     step = next((x for x in s.project.steps if x.id == sid), None)
@@ -353,12 +380,13 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
                   "symbols_file": u.symbols} for u in s.project.universes]
     on_steps = sorted({st.universe for st in s.project.steps if st.universe})
     return {
-        "ask_the_person_for": ["alpha", "from", "to", "universe", "rebalance", "decay", "split"],
-        "alphas_in_this_project": [s.project.alpha_name(a, ref) for a, ref in s.project.alphas],
-        "alpha": {"note": "one name, or several to price them as one portfolio. Ask which. A "
-                          "combined book is a different strategy from either alpha alone, and it "
-                          "is usually the better one, so it is worth offering",
-                  "allocation": "share per alpha, equal unless the person says otherwise"},
+        "ask_the_person_for": ["step", "from", "to", "universe", "rebalance", "decay", "split"],
+        "weights_in_this_project": [s.project.weights_name(a, ref)
+                                    for a, ref in s.project.weights_steps],
+        "step": {"note": "one name, or several to price them as one portfolio. Ask which. Two "
+                         "priced together is a different question from either alone, and it is "
+                         "usually the better one, so it is worth offering",
+                 "allocation": "share per step, equal unless the person says otherwise"},
         "why": "each one changes the number. A backtest run on conditions nobody chose is a guess "
                "with a decimal point on it.",
         "window": {"data_available": span or "prices table not written yet",
@@ -366,8 +394,8 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
         "universe": {
             "declared_on_steps": on_steps,
             "available": universes,
-            "note": "omit to use what each step already declares; name one to hold the same alpha "
-                    "to a different set of symbols",
+            "note": "omit to use what each step already declares; name one to hold the same "
+                    "step to a different set of symbols",
         },
         "rebalance": {"default": bt.rebalance,
                       "note": "gap between as-of dates, e.g. 1d, 5d, 20d. Shorter means more "
@@ -394,17 +422,17 @@ def _backtest_conditions(s: Session, args: dict) -> Any:
                       "to": {"type": "string", "description": "last as-of date"},
                       "rebalance": {"type": "string", "description": "e.g. 1d, 5d, 20d"},
                       "universe": {"type": "string",
-                                   "description": "hold the alpha to this universe instead of "
-                                                  "the one the step declares"},
+                                   "description": "hold the step to this universe instead of "
+                                                  "the one it declares"},
                       "decay": {"type": "integer",
                                 "description": "blend the last N portfolios; 0 or 1 is off"},
-                      "alpha": {"type": ["string", "array"], "items": {"type": "string"},
-                                "description": "which alpha to price. Required once the project "
-                                               "has more than one. Give several to price them as "
-                                               "one portfolio: each keeps its own weights table "
-                                               "and the run holds the sum"},
+                      "step": {"type": ["string", "array"], "items": {"type": "string"},
+                               "description": "which weights table to price. Required once the "
+                                              "project has more than one. Give several to price "
+                                              "them as one portfolio: each keeps its own weights "
+                                              "table and the run holds the sum"},
                       "allocation": {"type": "object",
-                                     "description": "share of the money per alpha, e.g. "
+                                     "description": "share of the money per step, e.g. "
                                                     "{\"momentum\": 3, \"low_vol\": 1}. "
                                                     "Equal split if left out"},
                       "split": {"type": "string",
@@ -435,7 +463,7 @@ def _backtest(s: Session, args: dict) -> Any:
             rebalance=args.get("rebalance") or None, seed=int(args.get("seed") or 0),
             decay=None if decay is None else int(decay),
             universe=args.get("universe") or None,
-            split=args.get("split") or None, alpha=args.get("alpha") or None,
+            split=args.get("split") or None, step=args.get("step") or None,
             allocation=args.get("allocation") or None,
             fee_bps=args.get("fee_bps"), slippage_bps=args.get("slippage_bps"),
             purge=args.get("purge") or None, embargo=args.get("embargo") or None,
@@ -463,25 +491,6 @@ def _stale_tables(s: Session, args: dict) -> Any:
         "why": [{"job": c.target, "what_moved": c.details or [c.note]} for c in pl.updates],
         "fix": "run. The tables are rebuilt from the raw rows, which a replay never touches",
     } if stale else {"stale": [], "fix": "nothing to do: every table matches the file"}
-
-
-@tool("alpha_book",
-      "Every alpha this project has already backtested, and how each one did. Show this when "
-      "someone asks what has been tried, or wants to go back to one.",
-      {"properties": {}},
-      scope="research")
-def _alpha_book(s: Session, args: dict) -> Any:
-    book = s.store.alpha_book()
-    wl = s.project.weights_stage
-    wired = next((st.id for st in s.project.steps
-                  if wl and any(w.startswith(f"{wl.id}.") for w in st.writes)), None)
-    for row in book:
-        row["wired"] = row["alpha"] == wired
-    for row in book:
-        found = s.project.alpha(row["alpha"])
-        row["name"] = s.project.alpha_name(row["alpha"], found[1] if found else "")
-    return {"wired_now": wired, "alphas": book,
-            "note": "use_alpha or save_step changes which one writes the weights table"}
 
 
 @tool("list_backtests", "Every replay this project has run, newest first.",
@@ -555,120 +564,6 @@ def _list_runs(s: Session, args: dict) -> Any:
     return {"runs": s.store.recent_runs(int(args.get("limit") or 30))}
 
 
-# ---- the shelf ---------------------------------------------------------------
-@tool("list_alphas",
-      "The alphas that ship with Qanat, ready to wire up and replay. Show these to the person "
-      "and let them pick one -- then call backtest_conditions before running anything.",
-      {"properties": {}},
-      scope="research")
-def _list_alphas(s: Session, args: dict) -> Any:
-    from qanat import alphas
-
-    return {
-        "alphas": alphas.describe(),
-        "in_this_project": [{"id": a, "writes": ref} for a, ref in s.project.alphas] or None,
-        "note": "each alpha has its own weights table and its own path through the graph, so "
-                "adding one leaves the others alone.",
-    }
-
-
-@tool("read_alpha", "The script an alpha on the shelf would install, before installing it.",
-      {"properties": {"name": {"type": "string"}}, "required": ["name"]},
-      scope="research")
-def _read_alpha(s: Session, args: dict) -> Any:
-    from qanat import alphas
-
-    name = _need(args, "name")
-    try:
-        return {"name": name, "source": alphas.script_for(name)}
-    except KeyError as exc:
-        raise ToolError(str(exc)) from exc
-
-
-@tool("use_alpha",
-      "Install one of the shelf alphas as the step that writes the weights table. Ask the person "
-      "which alpha and which universe first; `reads` should be a table with a symbol, a date and "
-      "a price -- call list_tables if you are not sure which one that is.",
-      {"properties": {
-          "name": {"type": "string", "description": "an alpha from list_alphas"},
-          "reads": {"type": "string", "description": "stage.table holding symbol, date, price"},
-          "also_reads": {"type": "array", "items": {"type": "string"},
-                         "description": "further tables the step may read. The shelf script only "
-                                        "ranks on `reads`, so these matter once you edit it -- "
-                                        "declaring them now is what lets `ctx.read()` allow them"},
-          "universe": {"type": "string"},
-          "rebalance": {"type": "string",
-                        "description": "how often this alpha wants to decide, e.g. 5d. Left out, "
-                                       "a backtest falls back to the project's"},
-          "decay": {"type": "integer",
-                    "description": "hold a blend of the last N portfolios. 0 or 1 is off"},
-          "options": {"type": "object", "description": "overrides, e.g. {\"lookback\": 120}"},
-      }, "required": ["name", "reads"]},
-      writes=True,
-      scope="full")
-def _use_alpha(s: Session, args: dict) -> Any:
-    from qanat import alphas
-    from qanat.editor import EditorError, save_step
-
-    name = _need(args, "name")
-    if name not in alphas.CATALOGUE:
-        raise ToolError(f"no alpha called '{name}'. On the shelf: {', '.join(alphas.CATALOGUE)}")
-    reads = _known_table(s, _need(args, "reads"))
-
-    wl = s.project.weights_stage
-    if wl is None:
-        raise ToolError("this project has no weights stage, so there is nowhere to put a portfolio")
-    # One table per alpha: adding one does not take the last one's place.
-    step_id = f"alpha_{name}"
-    target = f"{wl.id}.{name}"
-
-    universe = args.get("universe")
-    if universe and s.project.universe(universe) is None:
-        known = ", ".join(u.id for u in s.project.universes) or "(none defined)"
-        raise ToolError(f"unknown universe '{universe}'. This project has: {known}")
-    if not universe:
-        universe = next((st.universe for st in s.project.steps if st.universe), None)
-    if not universe:
-        raise ToolError(
-            "every shelf alpha holds itself to a universe, and this project declares none. "
-            "Call save_universe first -- give it an id and the symbols, and it writes the csv "
-            "-- then pass that id here."
-        )
-
-    # The primary table stays first: it is what the shelf script ranks on, and what
-    # `options.reads` hands it. Anything else is declared so a later edit to the
-    # script can read it without `ctx.read()` refusing.
-    declared = [reads]
-    for extra in args.get("also_reads") or []:
-        ref = _known_table(s, extra)
-        if ref not in declared:
-            declared.append(ref)
-
-    try:
-        script = alphas.write_alpha(s.root, name)
-        opts = dict(alphas.CATALOGUE[name]["options"])
-        opts.update(args.get("options") or {})
-        opts["reads"] = reads
-        decay = args.get("decay")
-        written = save_step(s.project, s.root, {
-            "id": step_id, "from": declared, "to": [target],
-            "script": script, "universe": universe, "options": opts,
-            # Dropped on the floor before this: the field exists on `Step`, and
-            # an alpha installed here could not carry it.
-            "rebalance": args.get("rebalance") or None,
-            "decay": None if decay is None else int(decay),
-        }, create_script=False)
-    except EditorError as exc:
-        raise ToolError(str(exc)) from exc
-    s.reload()
-    return {
-        "installed": step_id, "script": script, "reads": declared, "writes": target,
-        "universe": universe, "options": opts, "warnings": written,
-        "book": [a for a, _ in s.project.alphas],
-        "next": "run, then backtest_conditions, then backtest with alpha=" + step_id,
-    }
-
-
 # ---- author ------------------------------------------------------------------
 @tool("save_step",
       "Add a step, or replace one that exists. `script` is written to disk when `source` is given. "
@@ -688,7 +583,7 @@ def _use_alpha(s: Session, args: dict) -> Any:
           # Both of these have always been honoured; neither was in the schema,
           # so an agent had no way to find out the field existed at all.
           "rebalance": {"type": "string",
-                        "description": "how often this alpha wants to decide, e.g. 5d. A backtest "
+                        "description": "how often this step wants to decide, e.g. 5d. A backtest "
                                        "uses it unless told otherwise. Only meaningful on a step "
                                        "that writes weights"},
           "decay": {"type": "integer",
@@ -761,7 +656,7 @@ def _read_bar(s: Session, args: dict) -> Any:
                       "description": "the fixed bar for `floor`. 3.0 is what Harvey, Liu and "
                                      "Zhu argued for after counting how many factors had "
                                      "already been tested"},
-          "alpha": {"type": "number",
+          "significance": {"type": "number",
                     "description": "the significance one test would have needed, before it is "
                                    "divided by the number of tests. For `count`"},
           "gate": {"type": "boolean",
@@ -786,7 +681,7 @@ def _set_bar(s: Session, args: dict) -> Any:
             return (0, 0.0)
         if b.rule == "floor":
             return (1 if b.gate else 0, float(b.t_floor))
-        return (1 if b.gate else 0, 1.0 / max(1e-9, float(b.alpha)))
+        return (1 if b.gate else 0, 1.0 / max(1e-9, float(b.significance)))
 
     loosened = strength(now) < strength(was)
     s.store.event("warn" if loosened else "info", "bar",
@@ -857,26 +752,26 @@ def _record_trial(s: Session, args: dict) -> Any:
       "looks like. Nothing inside a backtest can tell those apart, so read this before "
       "quoting one.",
       {"properties": {
-          "alpha": {"type": "string",
-                    "description": "scope the count to one strategy. The number that matters "
-                                   "is the size of the set the winner was chosen from: leave "
-                                   "this out when comparing several strategies"},
+          "step": {"type": "string",
+                   "description": "scope the count to one weights table. The number that "
+                                  "matters is the size of the set the winner was chosen from: "
+                                  "leave this out when comparing several"},
           "limit": {"type": "integer", "description": "how many rows, newest first"},
       }, "required": []},
       scope="research")
 def _list_trials(s: Session, args: dict) -> Any:
-    alpha = str(args.get("alpha") or "").strip()
+    step = str(args.get("step") or "").strip()
     return {
-        "alpha": alpha,
-        "count": s.store.trial_count(alpha),
-        "trials": s.store.trials(alpha, int(args.get("limit") or 200)),
+        "step": step,
+        "count": s.store.trial_count(step),
+        "trials": s.store.trials(step, int(args.get("limit") or 200)),
     }
 
 
 @tool("save_universe",
       "Add or replace a universe: the symbols a portfolio may hold. Pass `symbols` and the csv "
-      "is written for you. Every shelf alpha holds itself to one, so a project with none cannot "
-      "install one until this has been called.",
+      "is written for you. A step that holds a basket holds itself to one, so a project with "
+      "none cannot install one until this has been called.",
       {"properties": {
           "id": {"type": "string", "description": "lower case, e.g. tech8"},
           "index": {"type": "string", "description": "what to call it in front of a person"},

@@ -196,7 +196,7 @@ def data_fingerprint(store: Store, project: Project) -> dict[str, list]:
 
 def digest_of(project: Project, root: Path, frm: str, to: str, every: str, seed: int,
               decay: int = 0, universe: str | None = None, split: str = "",
-              alpha: str = "", data: dict | None = None) -> str:
+              step: str = "", data: dict | None = None) -> str:
     """What this run was computed from. Two runs with the same digest are the
     same question, so a different answer means something moved underneath."""
     from qanat.plan import job_spec
@@ -204,7 +204,7 @@ def digest_of(project: Project, root: Path, frm: str, to: str, every: str, seed:
     spec = {
         "jobs": {j.id: job_spec(j, root) for j in project.jobs},
         "backtest": project.backtest.model_dump() if project.backtest else None,
-        "window": [frm, to, every, seed, decay, universe, split, alpha],
+        "window": [frm, to, every, seed, decay, universe, split, step],
         "data": data or {},
     }
     return hashlib.sha256(json.dumps(spec, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -258,7 +258,7 @@ def _smooth(held: dict[str, pd.Series], stops: list[str], n: int) -> dict[str, p
 def decay_weights(held: dict[str, pd.Series], stops: list[str], n: int) -> dict[str, pd.Series]:
     """Hold a blend of the last `n` portfolios instead of only the newest one.
 
-    This is the decay a quant means: the raw alpha is right about direction and
+    This is the decay a quant means: the raw score is right about direction and
     wrong about how often, so acting on every twitch pays fees for noise. Weights
     are averaged over the last n stops, newest heaviest (linear, n, n-1, ... 1) --
     the signal survives, the turnover falls.
@@ -283,7 +283,7 @@ def decay_weights(held: dict[str, pd.Series], stops: list[str], n: int) -> dict[
             blended = part if blended is None else blended.add(part, fill_value=0.0)
         blended = blended.dropna()
         # Averaging alone shrinks a book whose sides offset: a long/short portfolio
-        # that flips came out at |weights| = 0.33 where the alpha wrote 1.00, so
+        # that flips came out at |weights| = 0.33 where the step wrote 1.00, so
         # "less turnover" quietly also meant "a third of the bet". `combine()` has
         # always renormalised for the same reason; this is the same rule, applied
         # to the size the newest portfolio asked for.
@@ -308,7 +308,7 @@ def score_period(
     goes, and the curve draws itself while the rest is still running.
     """
     # Costs and the embargo are conditions of the *run*, not of the project. "Where
-    # does this edge die?" is answered by pricing the same alpha at 5 bps and at 25,
+    # does this edge die?" is answered by pricing the same weights at 5 bps and at 25,
     # so they have to be things a caller can change without editing the file.
     bt = project.backtest
     c = costs or Costs(bt.fee_bps, bt.slippage_bps, bt.embargo)
@@ -492,7 +492,7 @@ def gate_promotion(store: Any, project: Any, run_id: int) -> str:
     except (TypeError, ValueError):
         report = {}
     totals = report.get("totals") or {}
-    trials = store.trial_count(str(row.get("alpha") or ""))
+    trials = store.trial_count(str(row.get("step") or ""))
     v = bar_verdict(totals, trials, bar)
     if v.get("clears") is False:
         return (f"run {run_id} does not clear the bar: {v['note']}, and it has "
@@ -529,12 +529,12 @@ def bar_verdict(totals: dict[str, Any], trials: int, bar: Any) -> dict[str, Any]
         #  Divide the significance you would have demanded of one test by the
         #  number of tests actually run. Crude next to a deflated Sharpe, and it
         #  errs the safe way -- which for a bar is the right direction to err.
-        alpha = float(getattr(bar, "alpha", 0.05))
+        significance = float(getattr(bar, "significance", 0.05))
         n = out["trials"]
         from statistics import NormalDist
 
-        out["required"] = float(NormalDist().inv_cdf(1.0 - alpha / (2.0 * n)))
-        out["note"] = (f"{alpha:g} significance divided by {n} "
+        out["required"] = float(NormalDist().inv_cdf(1.0 - significance / (2.0 * n)))
+        out["note"] = (f"{significance:g} significance divided by {n} "
                        f"{'trial' if n == 1 else 'trials'}, so t ≥ "
                        f"{out['required']:.2f}")
     out["clears"] = t >= out["required"]
@@ -678,7 +678,7 @@ def segment(periods: list[Period], split: str | None,
     measurement of that choosing.
 
     Out of sample is better, but it is not clean. Those rows were already on disk
-    when the alpha was picked. The data did not argue back through the fitting,
+    when the step was picked. The data did not argue back through the fitting,
     but it argued back through the person: you knew how that year went.
 
     Only rows that did not exist yet are free of that, and `frontier` is where
@@ -762,24 +762,24 @@ def score(
 
 # --------------------------------------------------------------- several books
 # A backtest prices *a portfolio*, and a portfolio does not have to come from one
-# alpha. Running momentum and low-vol together is the ordinary thing a book does:
-# each alpha keeps its own weights table, and the run holds the sum of them.
+# weights table. Running momentum and low-vol together is the ordinary thing:
+# each keeps its own weights table, and the run holds the sum of them.
 #
-# The identity of such a run is the set of alphas it priced, in the order the
-# project declares them, joined by "+". A single alpha has no "+" in it, so every
+# The identity of such a run is the set of weights tables it priced, in the order
+# the project declares them, joined by "+". A single one has no "+" in it, so every
 # run recorded before this existed still reads back the same way.
-def _asked_for(alpha: str | Sequence[str] | None) -> list[str]:
+def _asked_for(step: str | Sequence[str] | None) -> list[str]:
     """One name, several names, or one string holding several. The CLI and the agent
     both end up sending text, so commas have to mean what they look like."""
-    if alpha is None:
+    if step is None:
         return []
-    if isinstance(alpha, str):
-        return [x.strip() for x in alpha.replace("+", ",").split(",") if x.strip()]
-    return [str(x).strip() for x in alpha if str(x).strip()]
+    if isinstance(step, str):
+        return [x.strip() for x in step.replace("+", ",").split(",") if x.strip()]
+    return [str(x).strip() for x in step if str(x).strip()]
 
 
 def _shares(names: Sequence[str], allocation: dict[str, float] | None) -> dict[str, float]:
-    """How the money is split between the alphas. Equal unless told otherwise, and
+    """How the money is split between them. Equal unless told otherwise, and
     always normalised, so an allocation of {a: 3, b: 1} means three-to-one whether
     or not the caller did the division."""
     if not allocation:
@@ -787,31 +787,31 @@ def _shares(names: Sequence[str], allocation: dict[str, float] | None) -> dict[s
     unknown = [k for k in allocation if k not in names]
     if unknown:
         raise BacktestError(
-            f"allocation names an alpha that is not in this run: {', '.join(unknown)}"
+            f"allocation names a step that is not in this run: {', '.join(unknown)}"
         )
     raw = {n: float(allocation.get(n, 0.0)) for n in names}
     if any(v < 0 for v in raw.values()):
-        raise BacktestError("an allocation cannot be negative. Short the alpha instead")
+        raise BacktestError("an allocation cannot be negative. Short it in the step instead")
     total = sum(raw.values())
     if total <= 0:
         raise BacktestError("the allocation is all zeroes, so there is no portfolio to price")
     return {n: round(v / total, 10) for n, v in raw.items()}
 
 
-def alpha_key(alpha_ids: Sequence[str]) -> str:
-    return "+".join(alpha_ids)
+def step_key(step_ids: Sequence[str]) -> str:
+    return "+".join(step_ids)
 
 
-def alpha_ids_of(key: str) -> list[str]:
+def step_ids_of(key: str) -> list[str]:
     return [x for x in str(key or "").split("+") if x]
 
 
 def combine(books: dict[str, pd.Series], share: dict[str, float]) -> pd.Series:
     """Several portfolios into one.
 
-    Each alpha promises a book of a fixed size (|weights| sum to 1), so a share is
+    Each weights table promises a basket of a fixed size (|weights| sum to 1), so a share is
     how much of the money each one gets. The sum is renormalised back to that same
-    size: when two alphas hold opposite sides of a name they net off, and the money
+    size: when two hold opposite sides of a name they net off, and the money
     that frees up is spread over what is left rather than left uninvested.
     """
     total = pd.Series(dtype=float)
@@ -834,7 +834,7 @@ class Costs(NamedTuple):
 
 
 def _upstream_of(project: Project, step_id: str) -> set[str]:
-    """The alpha and everything it reads, transitively. Sources are never in it:
+    """The step and everything it reads, transitively. Sources are never in it:
     a replay reads what already landed."""
     producer = {ref: st.id for st in project.steps for ref in st.writes}
     by_id = {st.id: st for st in project.steps}
@@ -863,7 +863,7 @@ def run_backtest(
     decay: int | None = None,
     universe: str | None = None,
     split: str | None = None,
-    alpha: str | Sequence[str] | None = None,
+    step: str | Sequence[str] | None = None,
     allocation: dict[str, float] | None = None,
     fee_bps: float | None = None,
     slippage_bps: float | None = None,
@@ -884,7 +884,7 @@ def run_backtest(
     try:
         return _run_backtest(
             store, project, root, frm, to, rebalance=rebalance, seed=seed, decay=decay,
-            universe=universe, split=split, alpha=alpha, allocation=allocation,
+            universe=universe, split=split, step=step, allocation=allocation,
             fee_bps=fee_bps, slippage_bps=slippage_bps, purge=purge, embargo=embargo,
             on_step=on_step, live=live, session_id=session_id,
         )
@@ -903,7 +903,7 @@ def _run_backtest(
     decay: int | None = None,
     universe: str | None = None,
     split: str | None = None,
-    alpha: str | Sequence[str] | None = None,
+    step: str | Sequence[str] | None = None,
     allocation: dict[str, float] | None = None,
     fee_bps: float | None = None,
     slippage_bps: float | None = None,
@@ -921,46 +921,46 @@ def _run_backtest(
     weights_stage = project.weights_stage
     if weights_stage is None:
         raise BacktestError("this project has no weights stage, so nothing produces a portfolio")
-    book = project.alphas
-    if not book:
+    declared = project.weights_steps
+    if not declared:
         raise BacktestError(f"nothing writes into the weights stage '{weights_stage.id}'")
-    wanted = _asked_for(alpha)
+    wanted = _asked_for(step)
     if wanted:
         picked = []
         for name in wanted:
-            found = project.alpha(name)
+            found = project.weights_step(name)
             if found is None:
                 raise BacktestError(
-                    f"no alpha called '{name}'. This project has: "
-                    + ", ".join(a for a, _ in book)
+                    f"no weights table called '{name}'. This project has: "
+                    + ", ".join(a for a, _ in declared)
                 )
             if found not in picked:
                 picked.append(found)
-        # keep the project's own order, so asking for the same two alphas either way
+        # keep the project's own order, so asking for the same two either way
         # round is the same run and lands in the same table
-        picked = [x for x in book if x in picked]
-    elif len(book) == 1:
-        picked = [book[0]]
+        picked = [x for x in declared if x in picked]
+    elif len(declared) == 1:
+        picked = [declared[0]]
     else:
         raise BacktestError(
-            "this project has more than one alpha, so say which one (or which ones) "
-            "to price: " + ", ".join(a for a, _ in book)
+            "this project has more than one weights table, so say which one (or which ones) "
+            "to price: " + ", ".join(a for a, _ in declared)
         )
-    alpha_ids = [a for a, _ in picked]
-    names = [Project.alpha_name(a, r) for a, r in picked]
-    key = alpha_key(alpha_ids)
+    step_ids = [a for a, _ in picked]
+    names = [Project.weights_name(a, r) for a, r in picked]
+    key = step_key(step_ids)
     share = _shares(names, allocation)
 
-    # An alpha can say how it wants to be run. What the caller asks for wins; then
-    # the alpha's own default; then the project's. When two alphas in one book
+    # A step can say how it wants to be run. What the caller asks for wins; then
+    # the step's own default; then the project's. When two priced together
     # disagree, nothing here is entitled to choose for them.
     steps = {st.id: st for st in project.steps}
     def _own(field: str) -> Any:
-        vals = {getattr(steps[a], field) for a in alpha_ids if a in steps}
+        vals = {getattr(steps[a], field) for a in step_ids if a in steps}
         vals.discard(None)
         if len(vals) > 1:
             raise BacktestError(
-                f"these alphas want different {field} values ({', '.join(map(str, sorted(vals)))}). "
+                f"these steps want different {field} values ({', '.join(map(str, sorted(vals)))}). "
                 f"Priced together they need one, so say which: pass {field} to the run."
             )
         return next(iter(vals)) if vals else None
@@ -988,13 +988,13 @@ def _run_backtest(
         )
     if not order(project):
         raise BacktestError("this project has no steps to replay")
-    # Replay only what this alpha depends on. Running the other alphas as well would
-    # cost time and prove nothing about the one being priced.
-    needed = set().union(*(_upstream_of(project, a) for a in alpha_ids))
+    # Replay only what the priced steps depend on. Running the others as well would
+    # cost time and prove nothing about the ones being priced.
+    needed = set().union(*(_upstream_of(project, a) for a in step_ids))
 
     # Costs are a condition of the run rather than of the file -- "where does this
     # edge die?" -- but only upwards. A negative cost pays you to trade, so
-    # turnover becomes profit and the run lands in the strategy book looking like
+    # turnover becomes profit and the run lands in the record looking like
     # a discovery: -9999 bps once put +1938% into it with nothing marking it.
     #
     # This used to be a validator on one caller's request model, which meant it
@@ -1038,10 +1038,10 @@ def _run_backtest(
                        cut_at, key + json.dumps(share, sort_keys=True) +
                        f"|{costs.fee_bps}|{costs.slippage_bps}|{costs.embargo}|{held_for}",
                        data=fingerprint)
-    run_id = store.start_backtest(frm, to, every, seed, digest, alpha=key,
+    run_id = store.start_backtest(frm, to, every, seed, digest, step=key,
                                   live=live, session_id=session_id)
     result = BacktestResult(run_id, frm, to, every, seed, digest)
-    result.conditions = {"alpha": key, "alphas": names, "allocation": share,
+    result.conditions = {"step": key, "steps": names, "allocation": share,
                          "from": frm, "to": to, "rebalance": every, "seed": seed,
                          "decay": smoothing, "split": cut_at or None,
                          "universe": universe or "(as declared on the step)",
@@ -1068,8 +1068,8 @@ def _run_backtest(
     #  slice of the past, and a benchmark is entitled to the whole history.
     #
     #  Which universe is the one the run actually used: the override if there was
-    #  one, otherwise the alphas' own. `_own` already refuses to choose when two
-    #  alphas priced together disagree, and that refusal is right here too -- a book
+    #  one, otherwise the steps' own. `_own` already refuses to choose when two
+    #  priced together disagree, and that refusal is right here too -- a basket
     #  spanning two pools has no single pool to be measured against.
     bench_universe: pd.DataFrame | None = None
     if bt.benchmark == "universe_equal_weight":
@@ -1078,7 +1078,7 @@ def _run_backtest(
         if holdable is None:
             result.notes.append(
                 "benchmark `universe_equal_weight` needs a universe and this run has none: "
-                "no `universe:` on the alpha, and none passed to the run. The benchmark "
+                "no `universe:` on the step, and none passed to the run. The benchmark "
                 "lines are absent rather than zero"
             )
         else:
@@ -1141,20 +1141,20 @@ def _run_backtest(
                 if series.size and abs(size - 1.0) > 0.01:
                     result.notes.append(
                         f"{stop}: {ref} |weights| sum to {size:.4f}, not 1.0 -- "
-                        f"this period was priced on a book that size"
+                        f"this period was priced on a basket that size"
                     )
                 books[name] = series
                 single = w
             combined = combine(books, share) if len(picked) > 1 else next(iter(books.values()))
-            # what was actually held is what gets saved; the per-alpha rows ride along
-            # so the drill-down can still say which alpha wanted which name
+            # what was actually held is what gets saved; the per-step rows ride along
+            # so the drill-down can still say which step wanted which name
             held[stop] = combined
 
             # Close the period that has been waiting for this stop's price. A period
             # never needs a stop later than the next one, so there is nothing to wait
             # for -- the curve grows one point per pass instead of all at the end.
             smoothed = _smooth(held, stops[:i + 1], smoothing)
-            # What gets recorded is what gets priced. This used to save the alpha's
+            # What gets recorded is what gets priced. This used to save the step's
             # raw output, so with decay on, the drill-down showed a portfolio that
             # was never traded -- |weights| 1.0 saved against a 0.34 book priced.
             priced = smoothed.get(stop, combined)
@@ -1192,7 +1192,7 @@ def _run_backtest(
         status = "ok" if result.periods and not result.failures else (
             "partial" if result.periods else "failed"
         )
-        # The pipeline ends in what the alpha earned. Writing it as a table makes the
+        # The pipeline ends in what the weights earned. Writing it as a table makes the
         # last node of the graph a real one, queryable with everything else, instead
         # of a number that only exists inside a report.
         _land_pnl(store, project, key, result)
@@ -1308,20 +1308,20 @@ def period_detail(store: Store, project: Project, run_id: int, as_of: str) -> di
     }
 
 
-def pnl_ref(project: Project, alpha: str | Sequence[str]) -> str | None:
+def pnl_ref(project: Project, step: str | Sequence[str]) -> str | None:
     """Where this run's PnL lands, if the project keeps a pnl stage.
 
-    One alpha keeps its own name. Several alphas priced together land in one table
+    One keeps its own name. Several priced together land in one table
     named for all of them, so the graph shows what it really is: several weights
     tables feeding a single result.
     """
     stage = project.pnl_stage
     if stage is None:
         return None
-    ids = alpha_ids_of(alpha) if isinstance(alpha, str) else list(alpha)
+    ids = step_ids_of(step) if isinstance(step, str) else list(step)
     if not ids:
         return None
-    return f"{stage.id}." + "_".join(i.removeprefix("alpha_") for i in ids)
+    return f"{stage.id}." + "_".join(ids)
 
 
 def _land_pnl(store: Store, project: Project, key: str, result: BacktestResult) -> None:
@@ -1329,7 +1329,7 @@ def _land_pnl(store: Store, project: Project, key: str, result: BacktestResult) 
     if ref is None or not result.periods:
         return
     rows = pd.DataFrame([asdict(p) for p in result.periods])
-    rows.insert(0, "alpha", key)
+    rows.insert(0, "step", key)
     rows["run_id"] = result.run_id
     rows["as_of"] = pd.to_datetime(rows["as_of"])
     rows["priced_from"] = pd.to_datetime(rows["priced_from"])

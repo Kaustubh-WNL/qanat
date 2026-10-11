@@ -31,6 +31,28 @@ def _ready(tmp_path: Path, days: int = TEST_DAYS) -> tuple[Store, object, Path]:
     return store, project, root
 
 
+def _add_weights_step(tmp_path: Path, name: str) -> str:
+    """A second step writing its own weights table, so a blend has two to hold.
+
+    The shelf used to supply these. It is gone, and nothing replaced it, because a
+    second weights table is an ordinary step: copy the one the scaffold wrote and
+    point it at a table of its own.
+    """
+    from qanat.editor import save_step
+
+    project, root = load(tmp_path)
+    base = next(st for st in project.steps
+                if any(w.startswith("weights.") for w in st.writes))
+    script = f"steps/{name}.py"
+    (root / script).write_text((root / base.script).read_text())
+    save_step(project, root, {
+        "id": name, "from": list(base.reads), "to": [f"weights.{name}"],
+        "script": script, "universe": base.universe,
+        "options": dict(base.options),
+    }, create_script=False)
+    return name
+
+
 def _window(store: Store) -> dict:
     """A window that sits inside whatever dates the synthetic feed produced."""
     bars = store.read("normalized.prices")
@@ -206,7 +228,7 @@ def test_scoring_as_we_go_matches_scoring_at_the_end(tmp_path: Path):
 
     # Rebuild the portfolios from what the run recorded, and score them in one go.
     # `bt_weights` holds what was actually *priced*, decay already applied -- it used
-    # to hold the alpha's raw output, so the drill-down showed a book that was never
+    # to hold the step's raw output, so the drill-down showed a basket that was never
     # traded. Nothing here re-applies decay for that reason.
     rows = store.bt_weights(streamed.run_id)
     held: dict = {}
@@ -335,7 +357,7 @@ def test_the_last_stop_has_no_period_to_open(tmp_path: Path):
 def test_a_portfolio_is_never_filled_at_a_price_it_used_to_decide(tmp_path: Path):
     """The one that decides whether any of this is worth reading.
 
-    An alpha deciding on the close of day t decided *using* that close. The order
+    A step deciding on the close of day t decided *using* that close. The order
     does not exist until that price is already printed, so it cannot be filled
     there. Every period must enter strictly after its own as-of date.
     """
@@ -344,7 +366,7 @@ def test_a_portfolio_is_never_filled_at_a_price_it_used_to_decide(tmp_path: Path
     assert res.periods
     for p in res.periods:
         assert pd.Timestamp(p.priced_from) > pd.Timestamp(p.as_of), (
-            f"{p.as_of} was filled at {p.priced_from} — a price the alpha had already seen"
+            f"{p.as_of} was filled at {p.priced_from} — a price the step had already seen"
         )
         assert pd.Timestamp(p.priced_to) > pd.Timestamp(p.priced_from)
     store.close()
@@ -362,28 +384,24 @@ def test_the_drill_down_prices_the_same_way(tmp_path: Path):
 
 
 # ----------------------------------------------------------- several at once
-def test_two_alphas_are_priced_as_one_portfolio(tmp_path: Path):
+def test_two_steps_are_priced_as_one_portfolio(tmp_path: Path):
     """The point of the change: a run holds the sum of several books, and the one
     PnL table it lands in is named for all of them."""
-    from qanat import mcp
     from qanat.backtest import pnl_ref
 
     store, project, root = _ready(tmp_path)
-    session = mcp.Session(str(tmp_path))
-    for name in ("low_vol", "neutral_momentum"):
-        entry = next(t for t in mcp.TOOLS if t["name"] == "use_alpha")
-        entry["handler"](session, {"name": name, "reads": "normalized.prices"})
-    session.close()
+    for name in ("second", "third"):
+        _add_weights_step(tmp_path, name)
     project, root = load(tmp_path)
     assert all(r.ok for r in run_all(store, project, root))
-    both = [a for a, _ in project.alphas][:2]
+    both = [a for a, _ in project.weights_steps][:2]
 
-    res = run_backtest(store, project, root, **_window(store), rebalance="5d", alpha=both)
-    assert res.conditions["alpha"] == "+".join(both)
-    assert len(res.conditions["alphas"]) == 2
+    res = run_backtest(store, project, root, **_window(store), rebalance="5d", step=both)
+    assert res.conditions["step"] == "+".join(both)
+    assert len(res.conditions["steps"]) == 2
     assert sum(res.conditions["allocation"].values()) == pytest.approx(1.0)
 
-    ref = pnl_ref(project, res.conditions["alpha"])
+    ref = pnl_ref(project, res.conditions["step"])
     assert ref and "_" in ref.partition(".")[2]
     assert store.exists(ref), "a blend needs a table of its own, not one of its parts'"
 
@@ -396,67 +414,59 @@ def test_two_alphas_are_priced_as_one_portfolio(tmp_path: Path):
 
 
 def test_the_order_you_name_them_in_does_not_make_a_different_run(tmp_path: Path):
-    from qanat import mcp
 
     store, project, root = _ready(tmp_path)
-    session = mcp.Session(str(tmp_path))
-    entry = next(t for t in mcp.TOOLS if t["name"] == "use_alpha")
-    entry["handler"](session, {"name": "low_vol", "reads": "normalized.prices"})
-    session.close()
+    _add_weights_step(tmp_path, "second")
     project, root = load(tmp_path)
     assert all(r.ok for r in run_all(store, project, root))
-    a, b = [x for x, _ in project.alphas][:2]
+    a, b = [x for x, _ in project.weights_steps][:2]
 
     w = _window(store)
-    one = run_backtest(store, project, root, **w, rebalance="5d", alpha=[a, b])
-    two = run_backtest(store, project, root, **w, rebalance="5d", alpha=f"{b},{a}")
-    assert one.conditions["alpha"] == two.conditions["alpha"]
+    one = run_backtest(store, project, root, **w, rebalance="5d", step=[a, b])
+    two = run_backtest(store, project, root, **w, rebalance="5d", step=f"{b},{a}")
+    assert one.conditions["step"] == two.conditions["step"]
     assert one.digest == two.digest, "the same question has to have the same digest"
     store.close()
 
 
 def test_an_allocation_is_a_ratio_not_a_requirement_to_do_the_division(tmp_path: Path):
-    from qanat import mcp
 
     store, project, root = _ready(tmp_path)
-    session = mcp.Session(str(tmp_path))
-    entry = next(t for t in mcp.TOOLS if t["name"] == "use_alpha")
-    entry["handler"](session, {"name": "low_vol", "reads": "normalized.prices"})
-    session.close()
+    _add_weights_step(tmp_path, "second")
     project, root = load(tmp_path)
     assert all(r.ok for r in run_all(store, project, root))
-    picked = [(a, r) for a, r in project.alphas][:2]
-    names = [project.alpha_name(a, r) for a, r in picked]
+    picked = [(a, r) for a, r in project.weights_steps][:2]
+    names = [project.weights_name(a, r) for a, r in picked]
 
     res = run_backtest(store, project, root, **_window(store), rebalance="5d",
-                       alpha=[a for a, _ in picked],
+                       step=[a for a, _ in picked],
                        allocation={names[0]: 3, names[1]: 1})
     assert res.conditions["allocation"][names[0]] == pytest.approx(0.75)
 
     with pytest.raises(BacktestError):
         run_backtest(store, project, root, **_window(store), rebalance="5d",
-                     alpha=[a for a, _ in picked], allocation={"nope": 1})
+                     step=[a for a, _ in picked], allocation={"nope": 1})
     store.close()
 
 
-# --------------------------------------------- how an alpha wants to be run
-def test_an_alpha_carries_its_own_rebalance_and_decay(tmp_path: Path):
+# ---------------------------------------- how a step wants to be run
+def test_a_step_carries_its_own_rebalance_and_decay(tmp_path: Path):
     """A five-day reversal and a sixty-day momentum do not want the same gap, so
-    the gap belongs to the alpha, not to the project."""
+    the gap belongs to the step, not to the project."""
     from qanat.project_io import save_project
 
     store, project, root = _ready(tmp_path)
-    step = next(st for st in project.steps if st.id == project.alphas[0][0])
+    step = next(st for st in project.steps if st.id == project.weights_steps[0][0])
     step.rebalance, step.decay = "10d", 3
     save_project(project, root)
     project, root = load(tmp_path)          # and it survives the round trip
     assert next(st for st in project.steps if st.id == step.id).rebalance == "10d"
 
-    res = run_backtest(store, project, root, **_window(store), alpha=step.id)
+    res = run_backtest(store, project, root, **_window(store), step=step.id)
     assert res.conditions["rebalance"] == "10d"
     assert res.conditions["decay"] == 3
     # what the caller asks for still wins
-    res2 = run_backtest(store, project, root, **_window(store), alpha=step.id, rebalance="5d")
+    res2 = run_backtest(store, project, root, **_window(store), step=step.id, rebalance="5d")
     assert res2.conditions["rebalance"] == "5d"
     store.close()
 
@@ -474,17 +484,13 @@ def test_costs_are_a_condition_of_the_run(tmp_path: Path):
     store.close()
 
 
-def test_two_alphas_that_disagree_about_the_gap_must_be_told(tmp_path: Path):
-    from qanat import mcp
+def test_two_steps_that_disagree_about_the_gap_must_be_told(tmp_path: Path):
     from qanat.project_io import save_project
 
     store, project, root = _ready(tmp_path)
-    session = mcp.Session(str(tmp_path))
-    entry = next(t for t in mcp.TOOLS if t["name"] == "use_alpha")
-    entry["handler"](session, {"name": "low_vol", "reads": "normalized.prices"})
-    session.close()
+    _add_weights_step(tmp_path, "second")
     project, root = load(tmp_path)
-    a, b = [x for x, _ in project.alphas][:2]
+    a, b = [x for x, _ in project.weights_steps][:2]
     for st in project.steps:
         if st.id == a:
             st.rebalance = "5d"
@@ -495,9 +501,9 @@ def test_two_alphas_that_disagree_about_the_gap_must_be_told(tmp_path: Path):
     assert all(r.ok for r in run_all(store, project, root))
 
     with pytest.raises(BacktestError, match="different rebalance"):
-        run_backtest(store, project, root, **_window(store), alpha=[a, b])
+        run_backtest(store, project, root, **_window(store), step=[a, b])
     # saying which settles it
-    ok = run_backtest(store, project, root, **_window(store), alpha=[a, b], rebalance="5d")
+    ok = run_backtest(store, project, root, **_window(store), step=[a, b], rebalance="5d")
     assert ok.conditions["rebalance"] == "5d"
     store.close()
 
@@ -591,7 +597,6 @@ def test_check_says_when_a_universe_would_flatter_the_numbers(tmp_path: Path):
 def test_a_replay_stops_holding_a_name_the_day_it_leaves(tmp_path: Path):
     """The survivorship fix, end to end. Not "the helper filters a dataframe" —
     a replay across a delisting must actually stop holding the name."""
-    from qanat import mcp
 
     # names a delisting on 2026-03-01 and replays across it, so it needs a feed
     # that reaches back that far rather than the short one the rest of us use
@@ -605,15 +610,12 @@ def test_a_replay_stops_holding_a_name_the_day_it_leaves(tmp_path: Path):
             r[4] = "2026-03-01"
     csv.write_text("\n".join(",".join(r) for r in [head, *body]) + "\n")
 
-    session = mcp.Session(str(tmp_path))
-    entry = next(t for t in mcp.TOOLS if t["name"] == "use_alpha")
-    entry["handler"](session, {"name": "momentum", "reads": "normalized.prices"})
-    session.close()
+    _add_weights_step(tmp_path, "second")
     project, root = load(tmp_path)
     assert all(r.ok for r in run_all(store, project, root))
 
     res = run_backtest(store, project, root, frm="2026-01-01", to="2026-08-01",
-                       rebalance="5d", alpha=project.alpha("momentum")[0])
+                       rebalance="5d", step=project.weights_step("portfolio")[0])
     held = store.bt_weights(res.run_id)
     before = [w for w in held if w["symbol"] == leaves and str(w["as_of"])[:10] < "2026-03-01"]
     after = [w for w in held if w["symbol"] == leaves and str(w["as_of"])[:10] >= "2026-03-01"]
@@ -717,7 +719,7 @@ def test_a_live_run_is_marked_as_one(tmp_path: Path):
 
 
 def test_the_frontier_separates_live_from_out_of_sample(tmp_path: Path):
-    """Out of sample is not clean: those rows were on disk when the alpha was
+    """Out of sample is not clean: those rows were on disk when the step was
     picked. Only rows that did not exist yet are, and the frontier is where they
     start."""
     from qanat.backtest import Period, segment
@@ -968,11 +970,11 @@ def test_a_run_is_measured_against_the_pool_it_was_given(tmp_path: Path):
     assert market.totals["benchmark_net"] != pytest.approx(pool.totals["benchmark_net"])
 
 
-#: An alpha that holds whatever the prices table carries. A step only needs
+#: A step that holds whatever the prices table carries. It only needs
 #: `universe:` when its script asks for one, so this is the shape of run that has
 #: no pool to be measured against -- and the one `universe_equal_weight` has to
 #: refuse rather than answer with the market.
-POOLLESS_ALPHA = """\
+POOLLESS_WEIGHTS = """\
 import pandas as pd
 
 
@@ -995,9 +997,9 @@ def test_the_pool_floor_is_absent_when_there_is_no_pool(tmp_path: Path):
     store, project, root = _ready(tmp_path)
     assert project.backtest is not None
     project.backtest.benchmark = "universe_equal_weight"
-    alpha = next(st for st in project.steps if st.id == "portfolio")
-    (root / alpha.script).write_text(POOLLESS_ALPHA)
-    alpha.universe = None
+    pstep = next(st for st in project.steps if st.id == "portfolio")
+    (root / pstep.script).write_text(POOLLESS_WEIGHTS)
+    pstep.universe = None
 
     res = run_backtest(store, project, root, **_window(store))
     assert res.periods, "the run itself should still price -- it is the floor that cannot"
@@ -1053,7 +1055,7 @@ def test_the_verdict_explains_itself():
     from qanat.models import Bar
 
     v = bar_verdict({"sharpe": 1.5, "periods": 104, "periods_per_year": 52.0}, 12,
-                    Bar(rule="count", alpha=0.05))
+                    Bar(rule="count", significance=0.05))
     assert v["trials"] == 12
     assert "12 trials" in v["note"] and "0.05" in v["note"]
     assert v["required"] is not None and v["t"] is not None

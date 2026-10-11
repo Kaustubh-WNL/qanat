@@ -6,11 +6,11 @@ becoming a pile of tables nobody can explain:
   1. `raw` is landed and never edited -- no step may write into a raw stage.
   2. Data only ever moves forward. A step may read from its own stage (a feature
      chain) but never from a later one.
-  3. There is exactly one `weights` stage. It holds **one table per alpha**, each
-     written by exactly one step. No alpha may read another alpha's weights, so no
-     edge is ever counted twice.
+  3. There is exactly one `weights` stage. It holds **one table per step**, each
+     written by exactly one step. No step may read another's weights, so no edge is
+     ever counted twice.
   4. A `pnl` stage may follow it, and if it exists it is last. Nothing writes it by
-     hand: a replay does, one table per alpha, holding what that alpha earned per
+     hand: a replay does, one table per weights table, holding what it earned per
      rebalance. It is the end of the pipeline.
   4. Every table read has a producer.
 """
@@ -89,7 +89,7 @@ def validate(p: Project, root: Path) -> Report:
         if weights and p.stage_index(pnls[0].id) != p.stage_index(weights[0].id) + 1:
             r.errors.append(
                 f"'{pnls[0].id}' must come directly after the weights stage "
-                f"'{weights[0].id}'. Anything between them is a stage an alpha's output "
+                f"'{weights[0].id}'. Anything between them is a stage the weights "
                 "would have to pass through"
             )
         for st in p.steps:
@@ -101,11 +101,33 @@ def validate(p: Project, root: Path) -> Report:
     elif weights and last != "weights":
         r.errors.append(f"the weights stage must be last, but '{p.stages[-1].id}' is")
 
+    # ---- rule 2a: normalized sits between raw and features -------------------
+    # `normalized` became a kind of its own on 2026-10-11. Before that the stage
+    # holding point-in-time facts carried `kind: features`, so the contract could
+    # not say where it belonged. It can now, and the rule is the obvious one: after
+    # raw, before anything computed.
+    norms = [x for x in p.stages if x.kind == "normalized"]
+    if len(norms) > 1:
+        r.errors.append(
+            f"at most one stage may have kind 'normalized', found {len(norms)}")
+    for nz in norms:
+        i = p.stage_index(nz.id)
+        for other in p.stages:
+            j = p.stage_index(other.id)
+            if other.kind == "raw" and j > i:
+                r.errors.append(
+                    f"the raw stage '{other.id}' comes after '{nz.id}'. Rows land in raw "
+                    "and are typed in normalized, so raw is first")
+            if other.kind == "features" and j < i:
+                r.errors.append(
+                    f"the features stage '{other.id}' comes before '{nz.id}'. Nothing is "
+                    "computed from rows that have not been typed yet")
+
     producers = p.producers()
 
     # One table, one producer. `producers()` is a dict, so a second job writing the
     # same table used to disappear from it silently -- and in the weights stage that
-    # meant one portfolio counted as two alphas, which is the double counting the
+    # meant one portfolio counted twice, which is the double counting the
     # whole closure rule exists to prevent.
     writers: dict[str, list[str]] = {}
     for j in p.jobs:
@@ -127,13 +149,13 @@ def validate(p: Project, root: Path) -> Report:
             mine = [w for w in st.writes if w.startswith(f"{wl}.")]
             if len(mine) > 1:
                 r.errors.append(
-                    f"step '{st.id}' writes {len(mine)} weights tables. One alpha is one "
+                    f"step '{st.id}' writes {len(mine)} weights tables. One step is one "
                     "portfolio, so one step writes one weights table"
                 )
-            # the closure rule: an alpha reads features, never another alpha
+            # the closure rule: a weights step reads features, never other weights
             if mine and any(rd.startswith(f"{wl}.") for rd in st.reads):
                 r.errors.append(
-                    f"alpha '{st.id}' reads another alpha's weights. Alphas never stack -- "
+                    f"step '{st.id}' reads another step's weights. Weights never stack -- "
                     "an edge counted through a tower of them is counted twice"
                 )
 
@@ -186,7 +208,7 @@ def validate(p: Project, root: Path) -> Report:
                 if "ctx.universe(" in script.read_text():
                     r.errors.append(
                         f"step '{st.id}' calls ctx.universe() but has no `universe:` set. "
-                        f"Every alpha on the shelf does, so this fails on the first run "
+                        f"A step that holds a basket does, so this fails on the first run "
                         f"with 'has no universe set'"
                     )
             except OSError:
@@ -314,18 +336,18 @@ def validate(p: Project, root: Path) -> Report:
             r.errors.append("backtest fee_bps and slippage_bps cannot be negative")
         # A name with a typo in it would stop live scoring dead, and the only sign
         # would be a line in the event log of a server nobody is watching.
-        for name in bt.live_alphas:
-            if p.alpha(name) is None:
-                known = ", ".join(a for a, _ in p.alphas) or "(none yet)"
+        for name in bt.live_steps:
+            if p.weights_step(name) is None:
+                known = ", ".join(a for a, _ in p.weights_steps) or "(none yet)"
                 r.errors.append(
-                    f"backtest live_alphas names '{name}', which is not an alpha here. "
+                    f"backtest live_steps names '{name}', which writes no weights table here. "
                     f"This project has: {known}"
                 )
-        if bt.live and not bt.live_alphas and len(p.alphas) > 1:
+        if bt.live and not bt.live_steps and len(p.weights_steps) > 1:
             r.warnings.append(
-                f"live is on and this project has {len(p.alphas)} alphas, but `live_alphas:` "
-                f"names none of them, so nothing will be scored forward. Name one (or several, "
-                f"to hold them as one book)"
+                f"live is on and this project has {len(p.weights_steps)} weights tables, but "
+                f"`live_steps:` names none of them, so nothing will be scored forward. Name one "
+                f"(or several, to hold them as one basket)"
             )
         if weights and not [t for t in producers if t.startswith(f"{weights[0].id}.")]:
             r.warnings.append("backtest is configured but nothing writes a portfolio to price")

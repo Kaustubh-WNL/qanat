@@ -1,12 +1,12 @@
 """Can a step reach data that had not happened yet?
 
 The one question this tool has to answer correctly. Everything else is arithmetic
-that can be checked by reading; leakage cannot, because a leaking alpha looks like
+that can be checked by reading; leakage cannot, because a leaking step looks like
 a brilliant one.
 
 The data does the discriminating. Each day one of two symbols jumps 2% and the
 other falls 2%, in a pattern with nothing to learn from the past -- so a blind
-alpha earns roughly nothing, and an alpha that can see two days ahead earns 2% per
+step earns roughly nothing, and one that can see two days ahead earns 2% per
 period, which compounds to something absurd. Every vector below runs the *same*
 cheating logic and differs only in how it tries to reach the prices. The net is
 the verdict.
@@ -19,7 +19,7 @@ import pytest
 from lab import data, harness
 
 WINDOW = ("2024-01-20", "2024-06-01")
-HONEST = 0.10          # a blind alpha lands far below this
+HONEST = 0.10          # a blind step lands far below this
 LEAKING = 1.0          # a leaking one lands far above it
 
 PICK_FROM_THE_FUTURE = '''
@@ -37,7 +37,7 @@ PICK_FROM_THE_FUTURE = '''
 
 
 def cheat(getter: str) -> str:
-    """An alpha that tries to see two days ahead, however `getter` reaches the data.
+    """A step that tries to see two days ahead, however `getter` reaches the data.
 
     It writes an honest `as_of`, which is what makes this the realistic shape: the
     lookahead guard checks the timestamp a step *writes*, so a leak that stamps the
@@ -83,12 +83,12 @@ def _net(tmp_path, name, getter):
 def test_the_blind_baseline_is_the_number_everything_is_measured_against(tmp_path):
     how, net = _net(tmp_path, "blind", VECTORS["blind"])
     assert how == "ran", net
-    assert abs(net) < HONEST, f"a blind alpha should earn nothing much, got {net:.2%}"
+    assert abs(net) < HONEST, f"a blind step should earn nothing much, got {net:.2%}"
 
 
 @pytest.mark.parametrize("vector", [v for v in VECTORS if v != "blind"])
 def test_no_route_to_the_future(tmp_path, vector):
-    """Either the route is refused, or it earns what a blind alpha earns.
+    """Either the route is refused, or it earns what a blind step earns.
 
     Both are passes. What must never happen is a run that succeeds *and* earns what
     only a time machine can earn.
@@ -108,7 +108,7 @@ def test_reading_the_source_file_off_disk_is_the_known_boundary(tmp_path):
     A step is arbitrary Python: it can open the file a source reads and take the
     whole history. Nothing in this process can prevent that, so it is recorded as
     the edge of what the as-of views can promise rather than left to be discovered
-    again by somebody who thought they had found an alpha.
+    again by somebody who thought they had found an edge.
     """
     how, net = _net(tmp_path, "off_disk", 'full = pd.read_csv(ctx.root / "seed/bars.csv")')
     assert how == "ran"

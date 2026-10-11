@@ -55,9 +55,9 @@ def test_data_only_moves_forward(root: Path):
     assert any("only moves forward" in e for e in rep.errors)
 
 
-def test_the_weights_stage_holds_one_table_per_alpha(root: Path):
-    """Two alphas are two portfolios, and the plan's layer contract says so: the
-    weights stage holds one table per alpha, not one table in total."""
+def test_the_weights_stage_holds_one_table_per_step(root: Path):
+    """Two steps are two portfolios, and the layer contract says so: the weights
+    stage holds one table per step, not one table in total."""
     spec = {**BASE, "steps": [
         {"id": "a", "from": ["raw.bars"], "to": ["weights.one"], "script": "steps/x.py"},
         {"id": "b", "from": ["raw.bars"], "to": ["weights.two"], "script": "steps/x.py"},
@@ -70,11 +70,11 @@ def test_one_step_writes_one_portfolio(root: Path):
         {"id": "a", "from": ["raw.bars"], "to": ["weights.one", "weights.two"],
          "script": "steps/x.py"},
     ]}
-    assert any("One alpha is one portfolio" in e for e in check(spec, root).errors)
+    assert any("One step is one portfolio" in e for e in check(spec, root).errors)
 
 
-def test_an_alpha_cannot_read_another_alpha(root: Path):
-    """Alphas never stack — an edge counted through a tower of them is counted twice."""
+def test_a_step_cannot_read_another_steps_weights(root: Path):
+    """Weights never stack"""
     spec = {**BASE, "steps": [
         {"id": "a", "from": ["raw.bars"], "to": ["weights.one"], "script": "steps/x.py"},
         {"id": "b", "from": ["weights.one"], "to": ["weights.two"], "script": "steps/x.py"},

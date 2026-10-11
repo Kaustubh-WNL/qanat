@@ -31,7 +31,7 @@ from pydantic import (
     model_validator,
 )
 
-StageKind = Literal["raw", "features", "weights", "pnl"]
+StageKind = Literal["raw", "normalized", "features", "weights", "pnl"]
 Connector = Literal["rest", "sql", "csv", "synthetic"]
 WriteMode = Literal["append", "replace"]
 
@@ -143,10 +143,10 @@ class Step(Base):
     universe: str | None = None
     timeout: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
-    # How this step is *executed* when it is an alpha. A five-day reversal and a
+    # How this step is *executed* when it writes the weights stage. A five-day
     # sixty-day momentum are not asking for the same rebalance gap, and the gap is
     # part of the rule, not of the project. Left unset, the run falls back to the
-    # `backtest:` block -- these only say what this alpha wants by default.
+    # `backtest:` block -- these only say what this step wants by default.
     rebalance: str | None = None
     decay: int | None = None
 
@@ -188,7 +188,7 @@ class Research(Base):
     #: Stop a pass once it has cost this much. The CLI reports its own spend, so
     #: this is measured rather than estimated.
     budget_usd: float = 1.0
-    #: How many alphas one pass will work on.
+    #: How many weights-writing steps one pass will work on.
     targets: int = 1
 
 
@@ -216,7 +216,7 @@ class Bar(Base):
     t_floor: float = 3.0
     #: The significance a single test would have needed, before it is divided by
     #: the number of tests. For `count`.
-    alpha: float = 0.05
+    significance: float = 0.05
     #: Whether failing this stops anything, or only says so.
     gate: bool = False
 
@@ -263,14 +263,15 @@ class Backtest(Base):
     # `qanat serve` runs a pass each time the data reaches the next as-of date on
     # the rebalance grid, so `rebalance: 1d` gives a result per day.
     live: bool = False
-    # Which alpha, or alphas, a live pass prices. A project holding one needs no
-    # instruction and this stays empty. With several, `run_backtest` refuses to
-    # choose -- rightly, since a book of two is a different strategy from either --
-    # and the scheduler has no business guessing either. Naming them here is how
-    # the choice gets made once, in the file, where it can be read back.
-    live_alphas: list[str] = Field(default_factory=list)
+    # Which weights-writing step, or steps, a live pass prices. A project holding
+    # one needs no instruction and this stays empty. With several, `run_backtest`
+    # refuses to choose -- rightly, since two priced together is a different
+    # question from either alone -- and the scheduler has no business guessing
+    # either. Naming them here is how the choice gets made once, in the file,
+    # where it can be read back.
+    live_steps: list[str] = Field(default_factory=list)
     # The last date the data held when live scoring was switched on. Everything
-    # after it is a period nobody could see when the alpha was chosen, which is
+    # after it is a period nobody could see when the step was chosen, which is
     # the only sense of out-of-sample that cannot be arrived at by looking.
     # Stamped once, on the first live pass -- computed fresh each time, it would
     # move forward daily and mean nothing.
@@ -343,20 +344,21 @@ class Project(Base):
 
     @property
     def pnl_stage(self) -> Stage | None:
-        """Where a replay writes what an alpha earned, if the project keeps one."""
+        """Where a replay writes what a weights table earned, if the project keeps one."""
         return next((x for x in self.stages if x.kind == "pnl"), None)
 
     @property
-    def alphas(self) -> list[tuple[str, str]]:
-        """(step id, weights table) for every alpha in the project.
+    def weights_steps(self) -> list[tuple[str, str]]:
+        """(step id, weights table) for every step that writes the weights stage.
 
-        **The alpha is the step from features to weights** -- the convention every
-        equity shop uses, because alphas have to be comparable and combinable, and
-        two alphas can only be compared if they read the same features. Its DAG is
-        its *lineage*: what it depends on, shared with whatever else depends on it.
-        Freeze that lineage and you have the bundle you archive to reproduce it.
+        **A step from features to weights is the end of the pipeline.** It has no
+        separate name: the stage it writes is what identifies it, which is why
+        `list_steps` finds these by filtering on stage rather than by a word. Its
+        DAG is its *lineage*: what it depends on, shared with whatever else depends
+        on it. Freeze that lineage and you have the bundle you archive to reproduce
+        it.
 
-        One weights table per alpha, so the book reads straight off the file.
+        One weights table per step, so the record reads straight off the file.
         """
         wl = self.weights_stage
         if wl is None:
@@ -369,23 +371,22 @@ class Project(Base):
         return sorted(out)
 
     @staticmethod
-    def alpha_name(step_id: str, ref: str = "") -> str:
-        """What to call an alpha in front of a person.
+    def weights_name(step_id: str, ref: str = "") -> str:
+        """What to call a weights table in front of a person.
 
         Its weights table, its PnL table and its short name are the same word, so
-        one name follows it through the pipeline. The step id keeps its `alpha_`
-        prefix because job ids share a namespace with the feature steps.
+        one name follows it through the pipeline.
 
-        Several alphas priced as one portfolio are joined by `+`, and read out the
-        same way: "momentum + low_vol" is one strategy made of two.
+        Several priced as one portfolio are joined by `+`, and read out the same
+        way: "momentum + low_vol" is one basket made of two.
         """
         if "+" in step_id:
-            return " + ".join(x.removeprefix("alpha_") for x in step_id.split("+") if x)
-        return ref.partition(".")[2] if ref else step_id.removeprefix("alpha_")
+            return " + ".join(x for x in step_id.split("+") if x)
+        return ref.partition(".")[2] if ref else step_id
 
-    def alpha(self, name: str) -> tuple[str, str] | None:
-        """Find an alpha by its short name, its step id, or its weights table."""
-        for step_id, ref in self.alphas:
+    def weights_step(self, name: str) -> tuple[str, str] | None:
+        """Find a weights-writing step by its short name, its id, or its table."""
+        for step_id, ref in self.weights_steps:
             if name in (step_id, ref, ref.partition(".")[2]):
                 return step_id, ref
         return None

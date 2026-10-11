@@ -27,15 +27,15 @@ with everything else rather than a number that only exists inside a report.
 
 ## 4. One step writes one weights table
 
-**One alpha is one portfolio.** The weights stage holds one table per alpha, and a step that
-tried to write two would be claiming to be two alphas at once.
+**One step is one portfolio.** The weights stage holds one table per step, and a step that
+tried to write two would be claiming to be two portfolios at once.
 
-## 5. No alpha reads another alpha's weights
+## 5. No step reads another step's weights
 
-An alpha reads features. It never reads another alpha, because an edge counted through a
+A weights step reads features. It never reads another's weights, because an edge counted through a
 tower of them is counted twice.
 
-Several alphas *can* be priced together as one book — that is what `qanat backtest --alpha
+Several *can* be priced together as one basket — that is what `qanat backtest --step
 a,b` does — but the combining happens in the replay, where the shares are visible and the
 result is one PnL table fed by both weights tables. It never happens inside a step, where it
 would be invisible.

@@ -98,7 +98,7 @@ are not, and that benchmark answers about a wider pool than the run was allowed 
 moves the sector call's contribution into the floor and hides exactly what this page is for.
 
 `universe_equal_weight` is the one that follows the run: the override if the run had one, otherwise
-the alphas' own `universe:`, with membership read as of each decision date. Redefining
+the steps' own `universe:`, with membership read as of each decision date. Redefining
 `equal_weight` would have fixed the grid and changed the meaning of every number already recorded
 under that name, so it keeps its behaviour and the second spec keeps its own.
 

@@ -2,7 +2,7 @@
 
 Long the strongest currencies, short the weakest, equal size on each side. It is a
 plain cross-sectional momentum rule, kept small on purpose: the point of this
-example is that the data is real, not that the alpha is good.
+example is that the data is real, not that the rule is good.
 
 No budget appears anywhere here. The weights say what share of a portfolio each
 currency is, and how much money that turns into is decided somewhere else.

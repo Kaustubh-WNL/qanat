@@ -3,7 +3,7 @@
 The oldest cross-sectional rule there is: rank by trailing return and hold the
 top names, equally weighted. Long only, weights sum to 1.
 
-Wired by `qanat alphas add momentum`. It is an ordinary step -- edit it, or throw it
+An ordinary step -- edit it, or throw it
 away and write your own. That is the point of having it.
 """
 

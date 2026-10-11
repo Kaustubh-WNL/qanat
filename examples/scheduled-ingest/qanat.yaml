@@ -13,7 +13,7 @@ stages:
     kind: raw
     description: landed exactly as it arrived, never edited
   - id: normalized
-    kind: features
+    kind: normalized
     description: typed, deduplicated, one key set
   - id: features
     kind: features

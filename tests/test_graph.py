@@ -37,9 +37,9 @@ def test_a_features_stage_that_chains_gets_a_column_for_each_link():
     g = a_graph(
         [("raw", "raw"), ("features", "features"), ("weights", "weights")],
         [("raw.a", "land", 1, "ok"), ("features.b", "mk_b", 1, "ok"),
-         ("features.c", "mk_c", 1, "ok"), ("weights.w", "alpha", 1, "ok")],
+         ("features.c", "mk_c", 1, "ok"), ("weights.w", "sorter", 1, "ok")],
         [("raw.a", "features.b", "mk_b"), ("features.b", "features.c", "mk_c"),
-         ("features.c", "weights.w", "alpha")],
+         ("features.c", "weights.w", "sorter")],
     )
     m = model(g)
     assert [[n.key for n in col] for col in m.cols] == [
@@ -53,9 +53,9 @@ def test_an_edge_that_skips_a_column_is_given_somewhere_to_pass_through():
     g = a_graph(
         [("raw", "raw"), ("features", "features"), ("weights", "weights")],
         [("raw.a", "land", 1, "ok"), ("features.b", "mk_b", 1, "ok"),
-         ("features.c", "mk_c", 1, "ok"), ("weights.w", "alpha", 1, "ok")],
+         ("features.c", "mk_c", 1, "ok"), ("weights.w", "sorter", 1, "ok")],
         [("raw.a", "features.b", "mk_b"), ("features.b", "features.c", "mk_c"),
-         ("raw.a", "features.c", "mk_c"), ("features.c", "weights.w", "alpha")],
+         ("raw.a", "features.c", "mk_c"), ("features.c", "weights.w", "sorter")],
     )
     m = model(g)
     passing = [n for n in m.cols[1] if n.dummy]
@@ -64,17 +64,17 @@ def test_an_edge_that_skips_a_column_is_given_somewhere_to_pass_through():
         "the long edge should run through the pass-through, not straight over the column"
 
 
-def test_a_replay_written_pnl_table_is_still_attached_to_its_alpha():
+def test_a_replay_written_pnl_table_is_still_attached_to_its_step():
     """Nothing declares that edge -- a backtest writes the table -- but it is real."""
     g = a_graph(
         [("weights", "weights"), ("pnl", "pnl")],
-        [("weights.momentum", "alpha_momentum", 4, "ok")],
+        [("weights.momentum", "sort_momentum", 4, "ok")],
         [],
-        [("alpha_momentum", ["weights.momentum"])],
+        [("sort_momentum", ["weights.momentum"])],
     )
     g["tables"].append({
         "ref": "pnl.momentum", "stage": "pnl", "stage_kind": "pnl", "name": "momentum",
-        "producer": "alpha_momentum", "producers": ["alpha_momentum"], "rows": 81,
+        "producer": "sort_momentum", "producers": ["sort_momentum"], "rows": 81,
         "status": "ok", "updated_at": None, "stale": False, "written_by_replay": True,
     })
     m = model(g)
@@ -125,8 +125,8 @@ def test_every_box_in_a_column_starts_at_the_same_place(tmp_path: Path):
 def test_colour_is_the_stage_and_nothing_else():
     g = a_graph(
         [("raw", "raw"), ("weights", "weights")],
-        [("raw.a", "land", 1, "ok"), ("weights.w", "alpha", 1, "ok")],
-        [("raw.a", "weights.w", "alpha")],
+        [("raw.a", "land", 1, "ok"), ("weights.w", "sorter", 1, "ok")],
+        [("raw.a", "weights.w", "sorter")],
     )
     m = model(g)
     from qanat.graph import STAGE_INK, _place

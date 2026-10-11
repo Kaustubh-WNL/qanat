@@ -3,7 +3,7 @@
 Rank by realised volatility, keep the calmest, and size each one inversely to its
 own volatility so no single name dominates the book.
 
-Wired by `qanat alphas add low_vol`. It is an ordinary step -- edit it, or throw it
+An ordinary step -- edit it, or throw it
 away and write your own. That is the point of having it.
 """
 

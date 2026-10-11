@@ -24,7 +24,7 @@ FROM raw__bars
 QUALIFY row_number() OVER (PARTITION BY symbol, CAST(date AS DATE) ORDER BY date DESC) = 1
 """
 
-#: The smallest honest alpha: hold one name, always. Its answer is arithmetic.
+#: The smallest honest step: hold one name, always. Its answer is arithmetic.
 HOLD_ONE = '''import pandas as pd
 
 
@@ -52,7 +52,7 @@ def run(ctx):
 
 def project_yaml(name: str, *, rebalance: str = "1d", fee: float = 0.0, slip: float = 0.0,
                  purge: str = "0d", embargo: str = "0d", extra_steps: str = "",
-                 alpha_script: str = "steps/alpha.py") -> str:
+                 step_script: str = "steps/sorter.py") -> str:
     lines = [
         f"project: {name}",
         "store: ./data/q.duckdb",
@@ -69,10 +69,10 @@ def project_yaml(name: str, *, rebalance: str = "1d", fee: float = 0.0, slip: fl
         "steps:",
         "  - {id: normalize, from: [raw.bars], to: [normalized.prices],",
         "     script: steps/normalize.sql}",
-        "  - id: alpha_h",
+        "  - id: sorter_h",
         "    from: [normalized.prices]",
         "    to: [weights.h]",
-        f"    script: {alpha_script}",
+        f"    script: {step_script}",
         "    universe: u",
     ]
     if extra_steps:
@@ -92,7 +92,7 @@ def project_yaml(name: str, *, rebalance: str = "1d", fee: float = 0.0, slip: fl
     return "\n".join(lines) + "\n"
 
 
-def build(where: Path, name: str, bars: pd.DataFrame, alpha_src: str,
+def build(where: Path, name: str, bars: pd.DataFrame, step_src: str,
           symbols: list[str] | None = None, files: dict[str, str] | None = None,
           **kw) -> Path:
     """A complete project on disk. `where` should be a tmp_path -- nothing here is
@@ -107,7 +107,7 @@ def build(where: Path, name: str, bars: pd.DataFrame, alpha_src: str,
     syms = symbols if symbols is not None else sorted(bars["symbol"].unique())
     pd.DataFrame({"symbol": syms}).to_csv(root / "universes/u.csv", index=False)
     (root / "steps/normalize.sql").write_text(NORMALIZE)
-    (root / "steps/alpha.py").write_text(alpha_src)
+    (root / "steps/sorter.py").write_text(step_src)
     for fname, body in (files or {}).items():
         (root / "steps" / fname).write_text(body)
     (root / "qanat.yaml").write_text(project_yaml(name, **kw))

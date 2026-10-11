@@ -738,16 +738,16 @@ def build_graph(
     bad = sum(1 for t in tables if t["status"] == "failed")
     pnl_stage = project.pnl_stage
     if pnl_stage is not None:
-        from qanat.backtest import alpha_ids_of, pnl_ref
+        from qanat.backtest import pnl_ref, step_ids_of
 
-        # One PnL table per alpha, plus one for every blend that has actually been
+        # One PnL table per weights table, plus one for every blend that has been
         # run: a blend is not declared anywhere, it exists because somebody priced
-        # two alphas together, so history is the only place it can be read from.
-        keys = [a for a, _ in project.alphas]
+        # two together, so history is the only place it can be read from.
+        keys = [a for a, _ in project.weights_steps]
         declared = set(keys)
-        for row in store.alpha_book():
-            k = row.get("alpha") or ""
-            if "+" in k and k not in declared and all(i in declared for i in alpha_ids_of(k)):
+        for row in store.steps_net():
+            k = row.get("step") or ""
+            if "+" in k and k not in declared and all(i in declared for i in step_ids_of(k)):
                 keys.append(k)
 
         seen = {t["ref"] for t in tables}
@@ -755,7 +755,7 @@ def build_graph(
             ref = pnl_ref(project, key)
             if ref is None:
                 continue
-            makers = alpha_ids_of(key)
+            makers = step_ids_of(key)
             if ref in seen:
                 # already listed (the store has it as an orphan); name its maker
                 for t in tables:

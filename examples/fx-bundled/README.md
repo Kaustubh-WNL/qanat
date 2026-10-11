@@ -1,6 +1,6 @@
 # Real data, in the repo
 
-Synthetic prices prove the pipeline runs. They cannot tell you whether an alpha
+Synthetic prices prove the pipeline runs. They cannot tell you whether a rule
 works, because you get whatever the generator was written to produce.
 
 This project holds 27 years of real numbers instead: one European Central Bank
@@ -42,7 +42,7 @@ out-of-sample half is worse than the half the parameters were chosen on. Both ar
 what you would expect from a plain momentum rule on major-currency crosses, and
 both are the reason net edge is the headline number here rather than gross.
 
-Raise `--fee-bps` until an alpha dies to find out how much of it was ever real.
+Raise `--fee-bps` until a rule dies to find out how much of it was ever real.
 This one does not have far to fall.
 
 ## Where the data came from

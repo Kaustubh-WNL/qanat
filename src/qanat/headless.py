@@ -236,7 +236,7 @@ def carry(summary: str) -> str:
 SUMMARY_BRIEF = """Summarise this session in at most two sentences, for someone
 scanning a list of past sessions to find this one again.
 
-Say what was being worked on and what came of it. Name any alpha or table that
+Say what was being worked on and what came of it. Name any step or table that
 was added or changed, and any replay that was run, with its net.
 
 Do NOT write a conclusion the session did not reach. One replay that lost money
