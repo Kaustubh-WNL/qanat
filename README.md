@@ -5,7 +5,7 @@
 <h1 align="center">Qanat</h1>
 
 <p align="center">
-  <i>An MCP server your agent uses to find which valuation indicators hold in an industry, and rank its companies on them, from filings and prices.</i>
+  <i>An MCP server that turns filings and prices into valuation indicators, and tests each one inside its own industry.</i>
 </p>
 
 <p align="center">
@@ -15,13 +15,20 @@
   <a href="https://discord.gg/JUmwATScS8"><img alt="Discord members" src="https://img.shields.io/badge/dynamic/json?logo=discord&logoColor=white&label=Discord&query=%24.approximate_member_count&url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FJUmwATScS8%3Fwith_counts%3Dtrue&color=5865F2&style=flat-square"></a>
 </p>
 
-An **indicator** is one number per company per date: PER, EV/EBITDA, ROIC, a trailing return. Which
-ones value an industry's companies depends on the industry, because the numbers that describe a
-factory do not describe software. Your agent is what finds the ones that hold, and Qanat is what it
-works through: the agent writes an indicator as a step, Qanat computes it for every company on every
-date, ranks them on it, and prices what the top of that ranking would have earned after fees. Each
-attempt is counted, so fifty tries cannot pass as one good idea. Point it at any source that carries
-a timestamp. Connect it to your agent and ask.
+Qanat does three things.
+
+1. **Takes the financials out of a filing** and adjusts them, each number dated by the day it was
+   knowable rather than the quarter it describes.
+2. **Builds valuation indicators from them.** Relative ones, like PER and EV/EBITDA, which need a
+   price as well as a filing. Absolute ones, like the floor the balance sheet supports and how far
+   the price sits below it.
+3. **Tests whether an indicator holds inside the industry the company belongs to.** It ranks that
+   industry's companies on the indicator, holds the top of the ranking, prices what that would have
+   earned after fees, and counts the attempt.
+
+Your agent drives all three over MCP, because which indicators value a factory are not the ones that
+value a software company, and nobody knows the right set in advance. Point it at any source that
+carries a timestamp. Connect it to your agent and ask.
 
 ## Install
 
@@ -237,11 +244,15 @@ server. There is no screen and no second HTTP API: your agent client is the scre
 runs the scheduler and serves this same MCP over HTTP from the process holding the store, which is
 also how the unattended pass reaches the project.
 
-Not implemented: backfills, incremental windows, and live trading. Ranking inside an industry is
-not built either: it needs a point-in-time industry classification and one indicator set per
-industry, and until those land a rank is against whatever universe you declare. Qanat produces a
-basket, on history and going forward. **It does not place an order**, and no agent it serves ever
-will.
+**Two of the three things on this page are only partly here.** Nothing in the package reads a
+filing: there are four generic connectors and no EDGAR parser, so step 1 is yours to write or to
+point at a feed you already have. Ranking inside an industry needs a point-in-time classification
+and one indicator set per industry, and neither exists, so today a rank is against whatever universe
+you declare. What is built is the engine under all of it: the point-in-time replay, the pricing after
+fees, and the trial count.
+
+Also not implemented: backfills, incremental windows, and live trading. Qanat produces a basket, on
+history and going forward. **It does not place an order**, and no agent it serves ever will.
 
 Two limits. The window is not sealed: the point-in-time views stop a step seeing the future, but
 nothing stops the agent reading past a date while it decides what to try. And there is no search
